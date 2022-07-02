@@ -8,9 +8,13 @@ from .lexicon import get_bliss_lexicon, get_g2p_augmented_bliss_lexicon_dict
 from .vocab import get_subword_nmt_bpe
 
 
-def _export_datasets(output_prefix):
+def _export_datasets(
+    output_prefix: str, returnn_python_exe: tk.Path, returnn_root: tk.Path
+):
     """
-    :param str output_prefix:
+    :param output_prefix:
+    :param returnn_python_exe:
+    :param returnn_root:
     """
 
     # export all bliss corpora
@@ -126,7 +130,7 @@ def _export_legacy_bpe(output_prefix):
     )
 
 
-def export_all(output_prefix):
+def export_all(output_prefix: str, returnn_python_exe: tk.Path, returnn_root: tk.Path):
     """
     Registers all LibriSpeech related data as output.
 
@@ -136,7 +140,7 @@ def export_all(output_prefix):
 
     :param str output_prefix:
     """
-    _export_datasets(output_prefix)
+    _export_datasets(output_prefix, returnn_python_exe, returnn_root)
     _export_lm_data(output_prefix)
     _export_lexicon_and_vocab(output_prefix)
     _export_legacy_bpe(output_prefix)
