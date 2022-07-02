@@ -1,4 +1,5 @@
 import os
+from typing import Optional
 
 from sisyphus import tk
 
@@ -9,7 +10,9 @@ from .vocab import get_subword_nmt_bpe
 
 
 def _export_datasets(
-    output_prefix: str, returnn_python_exe: tk.Path, returnn_root: tk.Path
+    output_prefix: str,
+    returnn_python_exe: Optional[tk.Path] = None,
+    returnn_root: Optional[tk.Path] = None,
 ):
     """
     :param output_prefix:
@@ -31,7 +34,11 @@ def _export_datasets(
             )
 
     # export all ogg zip corpora
-    ogg_corpus_dict = get_ogg_zip_dict(output_prefix=output_prefix)
+    ogg_corpus_dict = get_ogg_zip_dict(
+        output_prefix=output_prefix,
+        returnn_python_exe=returnn_python_exe,
+        returnn_root=returnn_root,
+    )
     for name, ogg_corpus in ogg_corpus_dict.items():
         tk.register_output(
             os.path.join(output_prefix, "LibriSpeech", "%s.ogg.zip" % name), ogg_corpus
@@ -130,7 +137,11 @@ def _export_legacy_bpe(output_prefix):
     )
 
 
-def export_all(output_prefix: str, returnn_python_exe: tk.Path, returnn_root: tk.Path):
+def export_all(
+    output_prefix: str,
+    returnn_python_exe: Optional[tk.Path] = None,
+    returnn_root: Optional[tk.Path] = None,
+):
     """
     Registers all LibriSpeech related data as output.
 
