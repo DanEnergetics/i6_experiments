@@ -11,7 +11,7 @@ from i6_core.returnn.training import ReturnnTrainingJob
 
 from i6_experiments.common.datasets.librispeech import get_ogg_zip_dict, get_bliss_corpus_dict
 
-from i6_experiments.users.rossenbach.datasets.librispeech import get_librispeech_bpe
+from i6_experiments.common.datasets.librispeech import get_subword_nmt_bpe
 from i6_experiments.users.rossenbach.setups import returnn_standalone
 
 
@@ -27,7 +27,7 @@ def get_bpe_datastream(bpe_size, is_recog):
     :return:
     """
     # build dataset
-    bpe_settings = get_librispeech_bpe(corpus_key="train-clean-100", bpe_size=bpe_size, unk_label='<unk>')
+    bpe_settings = get_subword_nmt_bpe(corpus_key="train-clean-100", bpe_size=bpe_size, unk_label='<unk>')
     bpe_targets = returnn_standalone.data.vocabulary.BpeDatastream(
         available_for_inference=False,
         bpe_settings=bpe_settings,
@@ -176,6 +176,40 @@ def build_test_dataset(dataset_key, returnn_python_exe, returnn_root, output_pat
     return test_dataset, test_reference_dict_file
 
 
+@lru_cache()
+def build_profile_dataset(dataset_key, returnn_python_exe, returnn_root, output_path, bpe_size=2000):
+
+    ogg_zip_dict = get_ogg_zip_dict("corpora")
+    bliss_dict = get_bliss_corpus_dict()
+    test_ogg = ogg_zip_dict[dataset_key]
+    from i6_core.corpus.convert import CorpusToTextDictJob
+    from i6_core.corpus.segments import SegmentCorpusJob
+    segments = SegmentCorpusJob(bliss_corpus=bliss_dict, num_segments=1).out_single_segment_files[0]
+
+    test_reference_dict_file = CorpusToTextDictJob(bliss_dict[dataset_key]).out_dictionary
+
+    train_bpe_datastream = get_bpe_datastream(bpe_size=bpe_size, is_recog=True)
+
+    audio_datastream = get_audio_datastream(returnn_python_exe, returnn_root, output_path)
+
+    data_map = {"audio_features": ("zip_dataset", "data"),
+                "bpe_labels": ("zip_dataset", "classes")}
+
+    test_zip_dataset = returnn_standalone.data.datasets.OggZipDataset(
+        path=[test_ogg],
+        audio_opts=audio_datastream.as_returnn_audio_opts(),
+        target_opts=train_bpe_datastream.as_returnn_targets_opts(),
+        seq_ordering="sorted_reverse"
+    )
+    test_dataset = returnn_standalone.data.datasets.MetaDataset(
+        data_map=data_map,
+        datasets={"zip_dataset": test_zip_dataset},
+        seq_order_control_dataset="zip_dataset"
+    )
+
+    return test_dataset, test_reference_dict_file
+
+
 def training(prefix_name, returnn_config, returnn_exe, returnn_root, num_epochs=250):
     """
 
@@ -226,7 +260,9 @@ def search_single(
         recognition_dataset,
         recognition_reference,
         returnn_exe,
-        returnn_root):
+        returnn_root,
+        mem_rqmt=8,
+):
     """
     Run search for a specific test dataset
 
@@ -238,16 +274,16 @@ def search_single(
     :param Path returnn_exe:
     :param Path returnn_root:
     """
-    from i6_core.returnn.search import ReturnnSearchJob, SearchBPEtoWordsJob, ReturnnComputeWERJob
+    from i6_core.returnn.search import ReturnnSearchJobV2, SearchBPEtoWordsJob, ReturnnComputeWERJob
     from i6_experiments.users.rossenbach.returnn.config import get_specific_returnn_config
 
 
-    search_job = ReturnnSearchJob(
+    search_job = ReturnnSearchJobV2(
         search_data=recognition_dataset.as_returnn_opts(),
         model_checkpoint=checkpoint,
         returnn_config=get_specific_returnn_config(returnn_config),
         log_verbosity=5,
-        mem_rqmt=8,
+        mem_rqmt=mem_rqmt,
         returnn_python_exe=returnn_exe,
         returnn_root=returnn_root
     )

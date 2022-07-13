@@ -10,13 +10,15 @@ import argparse
 import csv
 import importlib
 
-log.basicConfig(level=log.DEBUG)
+log.basicConfig(level=log.INFO)
 
 
 parser = argparse.ArgumentParser()
 parser.add_argument('-o', '--only', default=None) # Allow to ass multiple sep by comma
+parser.add_argument('-a', '--append', action="store_true") # Append to csv instead of overwriting
 
 parser.add_argument("-ocn", "--overwrite-config-name", default="returnn.config")
+parser.add_argument("-ox", "--only-experiment", default=None)
 args = parser.parse_args()
 
 RESULTS_PATH = "results2"
@@ -41,6 +43,8 @@ if args.only:
 csv_columns = {
     "NAME" : [],
 
+    "finished" : [],
+
     "Amount epochs: ": [],
 
     "BEST sub epoch \nby dev-other WER" : [],
@@ -49,11 +53,16 @@ csv_columns = {
 
     "Train time (hours)\n(until this epoch)" : [],
 
-    "Complete train time untill final epoch" : [],
+    "Train time untill end (h)" : [],
 
-    "num_params (M)" : [],
+    "Average time full epoch": [],
 
-    "devother error relation" : [],
+    "num params (M)" : [],
+
+    "dev/devtrain CE (final ep)" : [],
+    "dev/devtrain FER (final ep)" : [],
+    "devtrain WER" : [],
+    "dev/devtrain WER (final ep)" : [],
 
     "GPUs used" : [],
 
@@ -65,8 +74,10 @@ csv_columns = {
 }
 
 all_experiments = [s.replace(f"{RESULTS_PATH}/", "") for s in glob.glob(f"{RESULTS_PATH}/*") ]
-all_sub_experiments = {k : [] for k in all_experiments}
+if args.only_experiment:
+    all_experiments = [args.only_experiment]
 
+all_sub_experiments = {k : [] for k in all_experiments}
 for i, ex in enumerate(all_experiments):
     all_sub_experiments[ex] = [s.split("/")[-1].replace(".json", "") for s in glob.glob(f"{RESULTS_PATH}/{ex}/*") ]
 
@@ -142,6 +153,7 @@ def get_best_epoch_dev_other(data, optim=False):
     log.debug(f"Best ep {best_ep} (dev-other): {best_wer}")
     return best_ep
 
+all_log_datas = {}
 rows = []
 rows.append(list(csv_columns.keys()))
 for ex in all_experiments:
@@ -149,7 +161,7 @@ for ex in all_experiments:
     rows.append(row)
     log.debug(f"\nProcessing experiment '{ex}'\n")
     for sub_ex in all_sub_experiments[ex]:
-        log.debug(f"\nsub ex '{sub_ex}'\n")
+        log.info(f"\nsub ex '{sub_ex}'\n")
         try:
             with open(f'{RESULTS_PATH}/{ex}/{sub_ex}.json') as data_file:
                 data = json.load(data_file)
@@ -198,24 +210,114 @@ for ex in all_experiments:
         wers_per_set = [ get_dataset_epoch(best_ep_dev_other, _set) for _set in datasets ]
         log.debug(f"Found wers: {wers_per_set}")
 
+        def maybe_get_error_score_by_ep(name, epoch):
+            if data["dev-other"]["errors_per_ep"] and str(epoch) in data["dev-other"]["errors_per_ep"] and \
+                name in data["dev-other"]["errors_per_ep"][str(epoch)]:
+                return data["dev-other"]["errors_per_ep"][str(epoch)][name]
+            else:
+                return None
+
+        def get_key(_set="dev", _for="score"):
+            if not data["dev-other"]["errors_per_ep"]:
+                return None # data non existent
+            elif not "1" in data["dev-other"]["errors_per_ep"]:
+                return None
+            keys = list(data["dev-other"]["errors_per_ep"]["1"].keys())
+            if f"{_set}_{_for}_output" in keys:
+                return f"{_set}_{_for}_output"
+            elif f"{_set}_{_for}" in keys:
+                return f"{_set}_{_for}"
+
+            #log.info(keys)
+            #log.info(data["dev-other"]["errors_per_ep"])
+            return None
+            #assert False, "unknown key strucutre"
+
+        
+
+        #log.info(data["dev-other"]["errors_per_ep"])
+        devtrain_score_key = get_key("devtrain", "score")
+        log.info(devtrain_score_key)
+
+        devtrain_score_error_final = [
+            maybe_get_error_score_by_ep(devtrain_score_key, config_data["num_epochs"]),
+            maybe_get_error_score_by_ep(get_key("devtrain", "error"), config_data["num_epochs"]),
+        ]
+
+        #log.info(devtrain_score_error_final)
+
+        dev_score_error_final = [
+            maybe_get_error_score_by_ep(get_key("dev", "score"), config_data["num_epochs"]),
+            maybe_get_error_score_by_ep(get_key("dev", "error"), config_data["num_epochs"]),
+        ]
+
+        CE_error_ration = "no data"
+        if devtrain_score_error_final[0] and dev_score_error_final[0]:
+            CE_error_ration = devtrain_score_error_final[0]/dev_score_error_final[0]
+            if CE_error_ration > 1:
+                CE_error_ration = "extract error"
+            else:
+                CE_error_ration = round(CE_error_ration, 4)
+
+        FER_error_ration = "no data"
+        if devtrain_score_error_final[1] and dev_score_error_final[1]:
+            FER_error_ration = devtrain_score_error_final[1]/dev_score_error_final[1]
+            if FER_error_ration > 1:
+                FER_error_ration = "extract error"
+            else:
+                FER_error_ration = round(FER_error_ration, 4)
+
+        finished_train = "YES" if data["dev-other"]["finished_eps"] and int(data["dev-other"]["finished_eps"]) == int(config_data["num_epochs"]) else "NO"
+
+        devtrain_WER = f"No data for ep {config_data['num_epochs']}"
+        if "devtrain" in data and str(config_data["num_epochs"]) in data['devtrain']:
+            log.info("Found devtrain WER")
+            devtrain_WER = data['devtrain'][str(config_data["num_epochs"])]
+
+        devWER_final = None
+        if "dev-other" in data and str(config_data["num_epochs"]) in data['dev-other']['optim_wer_by_ep']:
+            devWER_final = float(data['dev-other']["optim_wer_by_ep"][str(config_data["num_epochs"])][-2][:-1])
+
+        dev_devtrain_WER_ration = f"No data for ep {config_data['num_epochs']}"
+        if isinstance(devWER_final, float) and isinstance(devtrain_WER, float):
+            dev_devtrain_WER_ration = devWER_final / devtrain_WER
+
+        # Write the ex log_datas to another file that can be analyzes
+
+        all_log_datas[f"{ex}/{sub_ex}"] = log_data
+
         row = [
             data["name"], # name
+            finished_train,
             config_data["full_epochs"],
             best_ep_dev_other,
             *wers_per_set,
             data["dev-other"]["time_p_sep"] * best_ep_dev_other,
             config_data["num_epochs"] * data["dev-other"]["time_p_sep"],
+            config_data["epoch_split"] * data["dev-other"]["time_p_sep"], # Time for a full epoch
             data["dev-other"]["num_params"], # params
-            "TODO: error relation!",
+            CE_error_ration,
+            FER_error_ration,
+            devtrain_WER,
+            dev_devtrain_WER_ration,
             "\n" + "\n".join([f'{time}: {gpu}' for gpu, time in zip(log_data["used_gpus"], log_data["time_switched_gpu"])]), # GPU by time
             data["dev-other"]["time_p_sep"],
             "TODO: best lm/am ratio",
             f"{os.getcwd()}/{config_path}" #config path
         ]
-        log.debug(f"Writing row: {row}")
+        log.info(f"Writing row: {row}")
         rows.append(row)
 
-with open('summary_new.csv', 'w') as f:
+with open('summary_new.csv', 'w' if not args.append else "a") as f:
     writer = csv.writer(f)
     for row in rows:
         writer.writerow(row)
+
+old_log_data = {}
+with open('log.datas.experiments.json', "r") as file:
+    old_log_data = json.load(file)
+
+old_log_data.update(all_log_datas)
+
+with open('log.datas.experiments.json', "w") as file:
+    json.dump(old_log_data, file, indent=1)

@@ -1,14 +1,13 @@
 # An addition to the hybrid baseline, only real purpose it to register and handle job outputs
 # Note, there is some duplicate logic with librispeech_hybrid_baseline, this should prob be merged
 
-from this import d
-
 from torch import exp_
 from i6_core.returnn import ReturnnConfig, ReturnnRasrTrainingJob
 import inspect
 import hashlib
 import returnn.tf.engine
 import os
+from typing import OrderedDict
 
 from sisyphus import tk
 
@@ -99,6 +98,7 @@ def make_returnn_train_config_old(
     config_base_args=None,
     post_config_args=None,
     recoursion_depth = None,
+    extra_code_string = None # TODO this is new
 ):
 
     # We want all functions from ../helpers/specaugment_new.py
@@ -107,6 +107,9 @@ def make_returnn_train_config_old(
     # Net trick to filter all functions that are not build ins
     functions = [ f for f in dir(specaugment_new) if not f[:2] == "__"]
     code = "\n".join([ inspect.getsource(getattr(specaugment_new, f)) for f in functions ])
+
+    if extra_code_string:
+        code += extra_code_string
 
     if not recoursion_depth is None:
         code += f"import sys\nsys.setrecursionlimit({recoursion_depth})\n"
@@ -158,6 +161,43 @@ def test_net_contruction(
         session.run(out.placeholder, feed_dict=make_feed_dict(net.extern_data))
 
         net.print_network_info()
+
+def test_net_construction_advanced(
+    rt_config : ReturnnConfig
+
+):
+    from returnn.tf.engine import Engine
+    from ..helpers.returnn_test_helper import make_scope, make_feed_dict
+    from returnn.config import Config
+    from returnn.tf.util.data import Dim, SpatialDim, FeatureDim, BatchInfo
+    from returnn.util.basic import hms, NumbersDict, BackendEngine, BehaviorVersion
+    from returnn.tf.network import TFNetwork
+
+
+    from ..helpers import specaugment_new
+
+    # Net trick to filter all functions that are not build ins
+    functions = [ f for f in dir(specaugment_new) if not f[:2] == "__"]
+    funcs = {key:value for key in functions for value in [getattr(specaugment_new, k) for k in functions]}
+
+    #from recipe.returnn_common.tests.returnn_helpers import config_net_dict_via_serialized
+    config = Config({
+        **rt_config.config,
+        **funcs
+    })
+    print("TBS: test config args:")
+    print(rt_config.config)
+
+    BehaviorVersion.set(config.int("behavior_version", 12))
+
+    import tensorflow as tf
+
+    with tf.Graph().as_default() as graph:
+        assert isinstance(graph, tf.Graph)
+        Engine.create_network(
+            config=config, rnd_seed=1,
+            train_flag=False, eval_flag=False, search_flag=False,
+            net_dict=rt_config.config["network"])
 
 def make_and_register_returnn_rasr_train(
     #system,
@@ -262,6 +302,7 @@ def make_and_register_returnn_rasr_search_02(
     limit_eps=None,
     exp_name = None,
     amount_paralel_searches=15, # This was 10 per default earlier
+    use_gpu_and_extra_mem=False
 ):
     # train_job.out_models
     for id in train_job.out_models:
@@ -279,7 +320,8 @@ def make_and_register_returnn_rasr_search_02(
             recog_corpus_key=recog_corpus_key,
             feature_name=feature_name,
             recog_name = f"{exp_name}/{id:03}",
-            amount_paralel_searches=amount_paralel_searches
+            amount_paralel_searches=amount_paralel_searches,
+            use_gpu_and_extra_mem=use_gpu_and_extra_mem
         )
 
 def system_search_for_model(
@@ -289,7 +331,8 @@ def system_search_for_model(
     recog_corpus_key = None,
     feature_name = None,
     recog_name = None,
-    amount_paralel_searches=None
+    amount_paralel_searches=None,
+    use_gpu_and_extra_mem=False
 ):
     returnn_search_config = copy.deepcopy(returnn_train_config)
 
@@ -326,6 +369,14 @@ def system_search_for_model(
     if amount_paralel_searches:
         nn_recog_args["rtf"] = amount_paralel_searches
 
+    if use_gpu_and_extra_mem:
+        nn_recog_args.update(OrderedDict(
+                use_gpu=True,
+                rtf=10,
+                mem=32,
+                lmgc_mem=32
+            ))
+
     system.recog(**nn_recog_args)
 
     system.optimize_am_lm(
@@ -340,7 +391,6 @@ def system_search_for_model(
     # Now do the same for all the *best* checkpoints bug register them regardless of limit_eps:
     # see i6_core GetBestCheckpointJob() 
     # # I'm not sure what heppens when using this on an unfinished training thoug
-
 
 import copy
 
@@ -425,13 +475,14 @@ def make_and_register_final_rasr_search(
     exp_name = None,
 
     for_best_n = 1, # Only for the best, otherwise for the 'n' best
+
 ):
     # This uses 'GetBestCheckpointJob' which I stole from users/zeineldeen
     from ..helpers.returnn_helpers import GetBestCheckpointJob, GetBestEpochJob
 
     # TBS: final serach registered
 
-    mesasures = ["dev_score", "dev_error"] # TODO: maybe add more
+    mesasures = ["dev_score_output", "dev_error_output"] # TODO: maybe add more
     best_score_getters = {}
     for m in mesasures:
         best_score_getters[m] = GetBestEpochJob(
@@ -492,5 +543,102 @@ def make_and_register_final_rasr_search(
 
     #tk.register_output(f"{output_path}/final_wer", dispatch_final_search.out_final_wer)
     
+
+
+
+def make_and_register_final_rasr_search_manual( 
+    train_job = None,
+    output_path = None,
+
+    system = None,
+    returnn_train_config = None,
+    feature_name = None,
+    exp_name = None,
+
+    for_best_n = 2, # Only for the best, otherwise for the 'n' best
+):
+
+
+    # 1 - check if the train job is done 
+    if os.path.exists(train_job.out_learning_rates):
+        print(f"TBS: train job {exp_name} finished performing final recog")
+        import glob
+        # I suppose this means the train is done
+        #print(f"TBS: {train_job.out_model_dir}")
+        all_models = sorted([int(x.split("/")[-1].split(".")[1]) for x in glob.glob(str(train_job.out_model_dir) + "/epoch.*.index")])
+        #print(f"TBS: found final models: {all_models}")
+        for x in range(1, for_best_n + 1): # We could invert but also we can just itterate from the back
+            epoch = all_models[-x]
+            print(f"Searching for sub ep {epoch}", end=",")
+            for data in ["dev-other", "dev-clean", "test-other", "test-clean"]:
+                model = train_job.out_models[epoch] # This will always be availabol at this point
+                #print(model)
+
+                system.init_rasr_am_lm_config_recog(
+                    recog_corpus_key=data
+                )
+
+                rec_name = f"{exp_name}_{data}"
+                if data == "dev-other":
+                    rec_name = exp_name # We dont prefix dev other...
+
+                system_search_for_model(
+                    model = model,
+                    system = system,
+                    returnn_train_config= returnn_train_config,
+                    recog_corpus_key=data,
+                    feature_name=feature_name,
+                    recog_name = f"{rec_name}/{epoch:03}" # This might have run already but that fine
+                )
+
+
+def make_and_register_final_rasr_search_manual_devtrain( 
+    train_job = None,
+    output_path = None,
+
+    system = None,
+    returnn_train_config = None,
+    feature_name = None,
+    exp_name = None,
+
+    for_best_n = 1, # Only for the best, otherwise for the 'n' best
+
+    use_gpu_and_extra_mem=False
+):
+
+
+    # 1 - check if the train job is done 
+    if os.path.exists(train_job.out_learning_rates):
+        import glob
+        # I suppose this means the train is done
+        #print(f"TBS: {train_job.out_model_dir}")
+        all_models = sorted([int(x.split("/")[-1].split(".")[1]) for x in glob.glob(str(train_job.out_model_dir) + "/epoch.*.index")])
+        #print(f"TBS: found final models: {all_models}")
+        for x in range(1, for_best_n + 1): # We could invert but also we can just itterate from the back
+            epoch = all_models[-x]
+            print(f"devother for ep{epoch}", end=",")
+            data = "devtrain2000"
+            model = train_job.out_models[epoch] # This will always be availabol at this point
+            #print(model)
+
+            system.init_rasr_am_lm_config_recog(
+                recog_corpus_key=data
+            )
+
+            rec_name = f"{exp_name}_{data}"
+            if data == "dev-other":
+                rec_name = exp_name # We dont prefix dev other...
+
+            system_search_for_model(
+                model = model,
+                system = system,
+                returnn_train_config= returnn_train_config,
+                recog_corpus_key=data,
+                feature_name=feature_name,
+                recog_name = f"{rec_name}/{epoch:03}", # This might have run already but that fine
+                use_gpu_and_extra_mem=use_gpu_and_extra_mem
+            )
+
+
 
 

@@ -9,6 +9,7 @@ import logging as log
 import os
 import argparse
 import importlib
+from numpy import nan # we need this in case there are any 'nan' in errors or anything ( for when we call eval() )
 
 log.basicConfig(level=log.INFO)
 
@@ -44,9 +45,11 @@ if args.only:
     data_set_prefixes = { args.only : data_set_prefixes[args.only]}
 
 if args.update_data_filter:
+    log.debug(f"updating filter: {args.update_data_filter}")
     data, new_filt = args.update_data_filter.split(":")
     if data in data_set_prefixes:
         data_set_prefixes[data] = new_filt
+        log.debug(f"updated: {data_set_prefixes}")
 
 datasets = list(data_set_prefixes.keys())
 
@@ -109,6 +112,7 @@ def parse_experiment_out_string(data_string):
         elif "best epoch:" in line:
             best_ep_by_score = try_or_default(lambda : int(re.findall(float_or_int, line)[0]), "not found")
         elif "errors:" in line:
+            log.debug(line)
             try:
                 errors_per_ep = eval(line.replace("errors:", ""))
             except SyntaxError as e:
@@ -164,7 +168,7 @@ def parse_log(log_file_path):
     lines = data.split("\n")
     for line in lines:
         if "Created TensorFlow device" in line and "tensorflow/core/common_runtime/gpu/gpu_device.cc" in line:
-            log.debug(line)
+            log.debug(line) 
             exert = line[line.index("name:") + 5:].split(",")[0]
             if used_gpus and exert == used_gpus[-1]:
                 continue # Only store gpu if it changed
@@ -185,14 +189,20 @@ def print_summary(ex_data, config_data, log_data=None):
 
     info = []
     wers = "no data"
-    if ex_data['wer_by_ep']:
+    if not isinstance(ex_data['wer_by_ep'], str):
         wers = ex_data['wer_by_ep']
-    elif ex_data['optim_wer_by_ep']:
-        wers = ex_data['optim_wer_by_ep']
+    elif not isinstance(ex_data['optim_wer_by_ep'], str):
+        wers = { k : ex_data["optim_wer_by_ep"][k][-2] for k in ex_data['optim_wer_by_ep'] }
+
+    cur_error = "not found"
+    if ex_data['finished_eps'] and int(ex_data['finished_eps']) in ex_data['errors_per_ep']:
+        cur_error = ex_data['errors_per_ep'][int(ex_data['finished_eps'])]
+        cur_error = {k: cur_error[k] for k in cur_error if k in ["train_error_output", "train_score_output"]}
 
     info += [
         f"progress: seps {ex_data['finished_eps']}/{config_data['num_epochs']}",
-        f"time per sep: {ex_data['time_p_sep']}"
+        f"time per sep: {ex_data['time_p_sep']}",
+        f"current error: {cur_error}"
     ]
 
     if log_data:
@@ -252,5 +262,6 @@ log_file_path = f"alias/{BASE}/{ex_path}{sub_experiment}/train.job/log.run.1" # 
 log_data = parse_log(log_file_path)
 log.debug(f"Got log data: {log_data}")
 
+log.debug(ex_data)
 print_summary(ex_data["dev-other"], conf_data, log_data)
 

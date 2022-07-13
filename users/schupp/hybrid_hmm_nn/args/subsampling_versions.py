@@ -1,3 +1,88 @@
+def make_subsampling_000_old_bhv(
+    net=None,
+    in_l="source0",
+    time_reduction=None,
+
+    #specific:
+    embed_dropout = None,
+    embed_l2 = None,
+
+    # General
+    initialization = None,
+    model_dim = None
+):
+    assert net, "need network"
+    net.update({
+        "conv0_0" : {
+            "class": "conv", 
+            "from": in_l, 
+            "padding": "same",
+            "filter_size": (3, 3),
+            "n_out": 32, 
+            "activation": None, 
+            "with_bias": True, 
+            },  # (T,50,32)
+        "conv0_1" : {
+            "class": "conv", 
+            "from": f"conv0_0", 
+            "padding": "same", 
+            "filter_size": (3, 3),
+            "n_out": 32, 
+            "activation": 'relu', 
+            "with_bias": True, 
+            },  # (T,50,32)
+        "conv0p" : {
+            "class": "pool", 
+            "mode": "max", 
+            "padding": "same", 
+            "pool_size": (1, 2), 
+            'strides': (1, 2),
+            "from": "conv0_1", 
+             }, # (T, 25, 32)
+        "conv1_0" : {
+            "class": "conv", 
+            "from": "conv0p", 
+            "padding": "same", 
+            "filter_size": (3, 3), 
+            "n_out": 64,
+            "activation": None, 
+            "with_bias": True,
+             }, # (T, 25, 64)
+        "conv1_1" : {
+            "class": "conv", 
+            "from": "conv1_0", 
+            "padding": "same", 
+            "filter_size": (3, 3),
+            "n_out": 64, 
+            "activation": 'relu', 
+            "with_bias": True, 
+            }, # (T,25,64)
+        "conv1p" : {
+            "class": "pool", 
+            "mode": "max", 
+            "padding": "same", 
+            "pool_size": (time_reduction, 1), 
+            'strides': (time_reduction, 1),
+            "from": "conv1_1", 
+            },
+        "conv_merged" : {
+            "class": "merge_dims", 
+            "from": "conv1p", 
+            "axes": ["dim:25", "dim:64"]},
+        'embedding': { 
+            'L2': embed_l2,
+            'activation': None,
+            'class': 'linear',
+            'forward_weights_init': initialization,
+            'from': ['conv_merged'],
+            'n_out': model_dim,
+            'with_bias': True},
+        'embedding_dropout': {
+            'class': 'dropout', 
+            'dropout': embed_dropout, 
+            'from': ['embedding']},
+    })
+    return net, "embedding_dropout"
 
 def make_subsampling_001(
     net=None,
@@ -348,6 +433,7 @@ def make_subsampling_004_feature_stacking(
     window_left = None,
     window_right = None,
     unsampling_strides = None,
+    sampling_activation = "relu",
 
     # General
     initialization = None,
@@ -370,7 +456,7 @@ def make_subsampling_004_feature_stacking(
             "padding": "same", 
             "filter_size": (3, 3),
             "n_out": 32, 
-            "activation": 'relu', 
+            "activation": sampling_activation, 
             "with_bias": True, 
             "in_spatial_dims": ["T", "dim:50"]},  # (T,50,32)
         "conv0p" : {
@@ -396,7 +482,7 @@ def make_subsampling_004_feature_stacking(
             "padding": "same", 
             "filter_size": (3, 3),
             "n_out": 64, 
-            "activation": 'relu', 
+            "activation": sampling_activation, 
             "with_bias": True, 
             "in_spatial_dims": ["T", "dim:25"]}, # (T,25,64)
         "conv1p" : {
