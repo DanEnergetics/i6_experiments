@@ -7,7 +7,7 @@ from i6_core.meta.system import select_element
 from i6_experiments.users.mann.experimental.write import WriteRasrConfigJob
 from i6_experiments.users.mann.nn.util import DelayedCodeWrapper, maybe_add_dependencies
 
-class SemiSupervisedTrainer:
+class BaseTrainer:
 
     def __init__(self, system=None):
         if system:
@@ -48,11 +48,11 @@ class SemiSupervisedTrainer:
             return WriteRasrConfigJob(**kwargs)
 
     def write(self, corpus, feature_corpus, feature_flow, alignment, num_classes, **kwargs):
-        j = SemiSupervisedTrainer.write_helper(
-            crp          = self.system.csp[corpus],
+        j = self.write_helper(
+            crp = self.system.csp[corpus],
             feature_flow = self.system.feature_flows[feature_corpus][feature_flow],
-            alignment    = select_element(self.system.alignments, feature_corpus, alignment),
-            num_classes  = self.system.functor_value(num_classes),
+            alignment = select_element(self.system.alignments, feature_corpus, alignment),
+            num_classes = self.system.functor_value(num_classes),
             **kwargs)
         return j
 
@@ -69,6 +69,8 @@ class SemiSupervisedTrainer:
             kwargs = locals()
             del kwargs["_ignored"], kwargs["self"]
             return ReturnnTrainingJob(**kwargs)
+
+class SemiSupervisedTrainer(BaseTrainer):
 
     def make_sprint_dataset(
             self,
@@ -113,7 +115,7 @@ class SemiSupervisedTrainer:
         self.system.nn_configs[feature_corpus][name] = j.out_returnn_config_file
 
 
-class SoftAlignTrainer(SemiSupervisedTrainer):
+class SoftAlignTrainer(BaseTrainer):
 
     def get_segments_pkl(self, overlay_name):
         from recipe.crnn.multi_sprint_training import PickleSegments
@@ -177,7 +179,7 @@ def cf(path):
     return "cf('{}')".format(path)
 
 
-class SprintCacheTrainer(SemiSupervisedTrainer):
+class SprintCacheTrainer(BaseTrainer):
     def make_ds(self, feature_corpus, alignment_path, feature_path, partition_epoch=1, seq_ordering=None, cached=True, **kwargs):
         assert feature_corpus.startswith("crnn"), "Maybe something about the format went wrong"
         maybe_cache = lambda path: path if not cached else DelayedCodeWrapper("cf('{}')", path)
