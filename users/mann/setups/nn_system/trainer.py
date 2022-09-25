@@ -70,7 +70,7 @@ class BaseTrainer:
             del kwargs["_ignored"], kwargs["self"]
             return ReturnnTrainingJob(**kwargs)
 
-class SemiSupervisedTrainer(BaseTrainer):
+class BaseTrainer(BaseTrainer):
 
     def make_sprint_dataset(
             self,

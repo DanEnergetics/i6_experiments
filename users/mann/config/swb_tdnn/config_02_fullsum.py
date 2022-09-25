@@ -295,3 +295,27 @@ ts.tune_parameter(
     reestimate_prior="transcription",
     dump_epochs=[4, 8, 12],
 )
+
+
+# ts.tune_parameter(
+#     name="baseline_downsampled_bw.1s.drate",
+#     crnn_config=baseline_bw_tdnn,
+#     parameters=DRATES,
+#     transformation=set_downsampled_bw_training,
+#     training_args={
+#         "num_classes": None,
+#         "alignment": None
+#     },
+#     recognition_args={
+#         **RECOG_ARGS,
+#     },
+#     fast_bw_args={
+#         "acoustic_model_extra_config": tdp_model.to_acoustic_model_config(),
+#         "fix_tdp_leaving_eps_arc": True,
+#         "normalize_lemma_sequence_scores": False,
+#     },
+#     epochs=[12, 24, 48, 120, 240, 300, 320],
+#     scorer_args={"prior_mixtures": None},
+#     reestimate_prior="transcription",
+#     dump_epochs=[4, 8, 12],
+# )
