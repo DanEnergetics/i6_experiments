@@ -7,7 +7,7 @@ from i6_core.returnn import ReturnnForwardJob, ReturnnRasrTrainingJob
 from i6_core.rasr import WriteRasrConfigJob
 from i6_core import meta
 from .nn_system.base_system import NNSystem
-from .nn_system.trainer import SemiSupervisedTrainer
+from .nn_system.trainer import BaseTrainer
 from i6_experiments.users.mann.experimental.sequence_training import add_fastbw_configs
 from i6_experiments.users.mann.experimental.plots import PlotSoftAlignmentJob
 from i6_core.lexicon.allophones import StoreAllophonesJob, DumpStateTyingJob
@@ -89,7 +89,6 @@ class HdfDumpster:
         try:
             returnn_config.config["network"]["fast_bw"]["sprint_opts"]["sprintConfigStr"] \
                 = config_path.rformat("--config={}")
-                # = "--config={}".format(config_path)
         except KeyError:
             pass
         return returnn_config
@@ -112,7 +111,7 @@ class HdfDumpster:
             "partition_epochs": args["partition_epochs"]["dev"],
             "corpus": "returnn_dump"
         })
-        dataset = SemiSupervisedTrainer(self.system).make_sprint_dataset("forward", **args)
+        dataset = BaseTrainer(self.system).make_sprint_dataset("forward", **args)
         returnn_config = self.instantiate_fast_bw_layer(returnn_config, fast_bw_args)
         returnn_root = training_args.get("returnn_root", self.system.returnn_root) or tk.Path(gs.RETURNN_ROOT)
         returnn_python_exe = training_args.get("returnn_python_exe", self.system.returnn_python_exe) or tk.Path(gs.RETURNN_PYTHON_EXE)
