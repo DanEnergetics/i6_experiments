@@ -1150,29 +1150,18 @@ class NNSystem(BaseSystem):
 	
 	def clean(self, training_name, epochs, cleaner_args=None):
 		from i6_core.returnn import WriteReturnnConfigJob
-		from i6_experiments.users.mann.experimental.cleaner import ReturnnCleanupOldModelsJob
+		from i6_experiments.users.mann.experimental.cleaner import ReturnnCleanupOldModelsJob, ReturnnCleanerConfig
 		training_job = self.jobs["train"]["train_nn_%s" % training_name]
 
 		cleaner_args = cleaner_args or {}
 		cleaner_args.setdefault("returnn_root", self.cleaner_returnn_root)
 
-		cleaner_config = copy.deepcopy(training_job.returnn_config)
-		cleaner_config.post_config["cleanup_old_models"] = {
-			"keep": epochs,
-			"keep_last_n": 1,
-			"keep_best_n": 0,
-		}
-		write_job = WriteReturnnConfigJob(
-			cleaner_config,
-		)
+		cleaner_config = ReturnnCleanerConfig.from_epochs(epochs)
+		# print(cleaner_config._serialize())
+		# quit()
 
 		j = ReturnnCleanupOldModelsJob(
-			# write_job.out_returnn_config_file,
-			{
-				"keep": epochs,
-				"keep_last_n": 1,
-				"keep_best_n": 0,
-			},
+			cleaner_config,
 			scores=training_job.out_learning_rates,
 			model=training_job.out_model_dir.join_right("epoch"),
 			**cleaner_args,
