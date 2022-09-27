@@ -77,7 +77,7 @@ class TransformAlignmentJob(Job):
         
         hdf_writer = rnn.SimpleHDFWriter(
             self.out_alignment.get_path(),
-            dim=None,
+            dim=dataset.get_data_dim("classes"),
             ndim=1
         )
         
