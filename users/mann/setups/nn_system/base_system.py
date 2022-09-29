@@ -36,7 +36,7 @@ from i6_core.meta.system import select_element
 NotSpecified = object()
 Default = object()
 
-from collections import namedtuple, UserString
+from collections import namedtuple, UserString, defaultdict
 trans = namedtuple('Transition', ['forward', 'loop'])
 
 nlog = lambda x: -math.log(x)
@@ -163,14 +163,17 @@ class BaseSystem(RasrSystem):
 		self._num_classes_dict = {}
 
 		self.nn_checkpoints = {}
+		self.nn_priors = {}
 	
 	def add_overlay(self, origin, name):
 		super().add_overlay(origin, name)
 		self.nn_checkpoints[name] = {}
+		self.nn_priors[name] = defaultdict(dict)
 	
 	def set_corpus(self, name, *args, **kwargs):
 		super().set_corpus(name, *args, **kwargs)
 		self.nn_checkpoints[name] = {}
+		self.nn_priors[name] = defaultdict(dict)
 
 	@property
 	def csp(self):
@@ -671,13 +674,11 @@ class BaseSystem(RasrSystem):
 		if reestimate_prior in {'CRNN', 'alt'}:
 			self.jobs[training_args["feature_corpus"]]["returnn_compute_prior_%s" % scorer_name] \
 				= score_features = extract_prior(name, crnn_config, training_args, epoch)
+			self.nn_priors[training_args["feature_corpus"]][name][epoch] = score_features.out_prior_xml_file
 			scorer_name += '-prior'
 			score_args['name'] = scorer_name
 			score_args['prior_file'] = score_features.out_prior_xml_file
 		elif reestimate_prior == 'transcription':
-			from i6_experiments.users.mann.setups.prior import get_prior_from_transcription_job
-			# prior = get_prior_from_transcription_job(self, self.num_frames["train"])
-			# score_args['prior_file'] = prior["xml"]
 			score_args['prior_file'] = self.prior_system.prior_xml_file
 		elif reestimate_prior == True:
 			assert False, "reestimating prior using sprint is not yet possible, you should implement it or use 'CRNN'"
@@ -718,8 +719,8 @@ class BaseSystem(RasrSystem):
 			prior_mixtures=prior_mixtures,
 			priori_scale=score_args.get('prior_scale', 0.),
 			# prior_file=score_features.prior if reestimate_prior else None,
-			prior_file=score_args.get("prior_file", None),
-			scale=score_args.get('mixture_scale', 1.0)
+			prior_file=select_element(self.nn_priors, training_args['feature_corpus'], score_args.get("prior_file", None), epoch),
+			scale=score_args.get('mixture_scale', 1.0),
 		)
 		self.feature_scorers[training_args['feature_corpus']][scorer_name] = scorer
 
