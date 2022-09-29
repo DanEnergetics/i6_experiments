@@ -8,6 +8,7 @@ from i6_core.returnn import ReturnnTrainingJob, ReturnnRasrDumpHDFJob, ReturnnRa
 from i6_core.meta.system import select_element
 from i6_experiments.users.mann.experimental.write import PickleSegmentsJob, WriteFlowNetworkJob
 from i6_experiments.users.mann.nn.util import DelayedCodeWrapper, maybe_add_dependencies
+from i6_experiments.users.mann.experimental.write import WriteRasrConfigJob as LegacyWriteRasrConfigJob
 
 class BaseTrainer:
 
@@ -47,7 +48,7 @@ class BaseTrainer:
         ):
             kwargs = locals()
             del kwargs["kwargs"]
-            return WriteRasrConfigJob(**kwargs)
+            return LegacyWriteRasrConfigJob(**kwargs)
 
     def write(self, corpus, feature_corpus, feature_flow, alignment, num_classes, **kwargs):
         j = self.write_helper(
