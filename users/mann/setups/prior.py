@@ -250,7 +250,7 @@ class PriorFromTranscriptionCounts(Job):
                 '<?xml version="1.0" encoding="UTF-8"?>\n<vector-f32 size="%d">\n'
                 % len(counts)
             )
-            f.write(" ".join("%.20e" % s for s in counts) + "\n")
+            f.write(" ".join("%.20e" % np.log(s) for s in counts) + "\n")
             f.write("</vector-f32>")
 
     def plot(self):
