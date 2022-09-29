@@ -38,6 +38,22 @@ class ShiftAlign(TransformerConfig):
         data = np.pad(alignment[self.shift:], (0, self.shift), 'constant', constant_values=(0, pad))
         return data
 
+class MoveSilence(TransformerConfig):
+    def __init__(self, silence_idx, start=True):
+        self.silence_idx = silence_idx
+        self.start = start
+
+    def call(self, alignment):
+        pad = get_val(self.silence_idx)
+        # find first non-silence index
+        if self.start:
+            (idx, *_), *_ = np.where(alignment != self.silence_idx)
+        else:
+            *_, (idx, *_) = np.where(alignment != self.silence_idx)
+        data = np.roll(alignment, -idx if self.start else idx)
+        return data
+
+
 class TransformAlignmentJob(Job):
     def __init__(
         self,
