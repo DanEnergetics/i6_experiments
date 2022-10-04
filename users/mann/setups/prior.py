@@ -273,6 +273,7 @@ def get_prior_from_transcription_job(
     system,
     total_frames=None,
     hmm_partition=None,
+    lemma_end_prob=0.0,
 ):
     transcribe_job = ApplyLexiconToCorpusJob(
         system.csp["train"].corpus_config.file,
@@ -282,6 +283,7 @@ def get_prior_from_transcription_job(
 
     count_phonemes = AllophoneCounts(
         transcribe_job.out_corpus,
+        lemma_end_probability=lemma_end_prob,
     )
 
     from i6_core.lexicon.allophones import DumpStateTyingJob
@@ -305,22 +307,27 @@ def get_prior_from_transcription_job(
     }
 
 class PriorSystem:
-    def __init__(self, system, total_frames=None, eps=None, extra_hmm_partition=None):
+    def __init__(self,
+        system,
+        total_frames=None,
+        eps=None,
+        extra_hmm_partition=None,
+        lemma_end_probability=0.0,
+    ):
         self.system = system
         self.total_frames = total_frames
-        self.prior_files = get_prior_from_transcription_job(system, total_frames)
         self.eps = eps
         self.hmm_partition = extra_hmm_partition
-        self.prior_txt_file = self.prior_files["txt"]
-        self.prior_xml_file = self.prior_files["xml"]
-        self.prior_png_file = self.prior_files["png"] 
+        self.lemma_end_probability = lemma_end_probability
+        self.extract_prior()
     
     def extract_prior(self):
         assert self.total_frames is not None
         self.prior_files = get_prior_from_transcription_job(
             self.system,
             total_frames=self.total_frames,
-            hmm_partition=self.hmm_partition
+            hmm_partition=self.hmm_partition,
+            lemma_end_prob=self.lemma_end_probability
         )
         self.prior_txt_file = self.prior_files["txt"]
         self.prior_xml_file = self.prior_files["xml"]

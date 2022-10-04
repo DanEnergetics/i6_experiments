@@ -9,6 +9,8 @@ from i6_core.rasr import RasrCommand
 # from .inspect import InspectTFCheckpointJob
 from i6_experiments.users.mann.setups.tdps import SimpleTransitionModel
 
+from .util import maybe_add_dependencies
+
 def add_bw_layer(csp, crnn_config, am_scale=1.0, ce_smoothing=0.0,
                  import_model=None, exp_average=0.001, 
                  prior_scale=1.0, tdp_scale=1.0,
@@ -84,19 +86,7 @@ class ScaleConfig(returnn.ReturnnConfig):
         return cls.from_config(config)
     
     def maybe_add_dependencies(self, *dependencies):
-        # assert isinstance(dep_code, str)
-        if len(dependencies) > 1:
-            for dep in dependencies:
-                self.maybe_add_dependencies(dep)
-            return
-        # single dependency case
-        dep_code = dependencies[0]
-        if not hasattr(self, "python_prolog"):
-            self.python_prolog = (dep_code,)
-            return
-        if not dep_code in self.python_prolog:
-            self.python_prolog += (dep_code,)
-        # already in prolog
+        maybe_add_dependencies(self, *dependencies)
   
     def set_prior_scale(self, prior_scale):
         assert isinstance(prior_scale, (int, float, returnn.CodeWrapper))
