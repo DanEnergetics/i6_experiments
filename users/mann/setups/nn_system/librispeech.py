@@ -258,8 +258,8 @@ def custom_recog_tdps():
     )
     return recog_extra_config
 
-def init_segment_order_shuffle(system):
+def init_segment_order_shuffle(system, chunk_size=1000):
     system.csp["crnn_train"] = copy.deepcopy(system.csp["crnn_train"])
     system.csp["crnn_train"].corpus_config.segment_order_shuffle = True
     system.csp["crnn_train"].corpus_config.segment_order_sort_by_time_length = True
-    system.csp["crnn_train"].corpus_config.segment_order_sort_by_time_length_chunk_size = 1000
+    system.csp["crnn_train"].corpus_config.segment_order_sort_by_time_length_chunk_size = chunk_size

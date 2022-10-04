@@ -1,4 +1,4 @@
-__all__ = ["ExpConfig", "RecognitionConfig", "BaseSystem", "NNSystem"]
+__all__ = ["ExpConfig", "RecognitionConfig", "BaseSystem", "NNSystem", "ConfigBuilder"]
 from sisyphus import *
 Path = setup_path(__package__)
 
@@ -918,7 +918,7 @@ class ConfigBuilder:
 		self.config_args = {}
 		self.network_args = {}
 		self.scales = {}
-		self.base_constructor = None
+		self.encoder = None
 		self.transforms = []
 
 	def set_ffnn(self):
@@ -948,6 +948,16 @@ class ConfigBuilder:
 	def set_transcription_prior(self):
 		self.transforms.append(self.system.prior_system.add_to_config)
 		return self
+	
+	def set_povey_prior(self):
+		self.transforms = [
+			t for t in self.transforms if t != self.system.prior_system.add_to_config
+		]
+		return self
+	
+	def set_scales(self, **scales):
+		self.scales.update(scales)
+		return self
 		
 	def set_tina_scales(self):
 		self.scales = {
@@ -956,6 +966,15 @@ class ConfigBuilder:
 			"tdp_scale": 0.1
 		}
 		return self
+	
+	def copy(self):
+		new_instance = type(self)(self.system)
+		new_instance.config_args = self.config_args.copy()
+		new_instance.network_args = self.network_args.copy()
+		new_instance.scales = self.scales.copy()
+		new_instance.transforms = self.transforms.copy()
+		new_instance.encoder = self.encoder
+		return new_instance
 	
 	def set_oclr(self):
 		from i6_experiments.users.mann.nn import learning_rates

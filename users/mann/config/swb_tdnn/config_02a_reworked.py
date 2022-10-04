@@ -3,6 +3,7 @@ import copy
 from sisyphus import *
 
 from i6_experiments.users.mann.setups.nn_system import (
+    ConfigBuilder,
     NNSystem, ExpConfig,
     init_segment_order_shuffle,
 )
@@ -14,6 +15,8 @@ from i6_experiments.users.mann.setups.nn_system.switchboard import (
     make_cart,
     init_prior_system,
 )
+import recipe.i6_experiments.users.mann.setups.nn_system.switchboard as swb
+import recipe.i6_experiments.users.mann.setups.nn_system.librispeech as lbs
 from i6_experiments.users.mann.nn.config import make_baseline
 from i6_experiments.users.mann.nn import bw, learning_rates, constants
 
@@ -44,14 +47,28 @@ swb_system.nn_and_recog(
 
 #--------------------------------- make baseline bw -----------------------------------------------
 
+# lbs_system = lbs.get_libri_1k_system()
+swb_system = swb.get_legacy_switchboard_system()
+# for binary in ["rasr_binary_path", "native_ops_path", "returnn_python_exe", "returnn_python_home", "returnn_root"]:
+#     setattr(swb_system, binary, getattr(lbs_system, binary))
+init_prior_system(swb_system)
+init_segment_order_shuffle(swb_system)
+
+TINA_RASR_EXE = rasr.RasrCommand.default_exe("nn-trainer")
+print(TINA_RASR_EXE)
+def set_tina_rasr(config):
+    config.config["network"]["fast_bw"]["sprint_opts"]["sprintExecPath"] = TINA_RASR_EXE
+
 from recipe.i6_experiments.users.mann.setups.tdps import CombinedModel
 tdp_model = CombinedModel.from_fwd_probs(3/8, 1/60, 0.0)
+swb_system.prior_system.lemma_end_probability = 1/4
 
 exp_config = ExpConfig(
     # compile_crnn_config=swb_system.baselines["viterbi_lstm"](),
     training_args={
         "num_classes": None,
-        "alignment": None
+        "alignment": None,
+        "num_epochs": 320,
     },
     fast_bw_args={
         "acoustic_model_extra_config": tdp_model.to_acoustic_model_config(),
@@ -64,9 +81,6 @@ exp_config = ExpConfig(
     dump_epochs=[4, 8, 12],
 )
 
-init_prior_system(swb_system)
-init_segment_order_shuffle(swb_system)
-swb_system.rasr_binary_path = tk.Path(gs.RASR_ROOT).join_right('arch/linux-x86_64-standard')
 swb_system.init_dump_system(
     segments=[
         "switchboard-1/sw02001A/sw2001A-ms98-a-0041",
@@ -77,61 +91,33 @@ swb_system.init_dump_system(
     occurrence_thresholds=(0.1, 0.05),
 )
 
-baseline_tdnn = make_baseline(num_input=40, adam=True)
-
-swb_system.prior_system.lemma_end_probability = 1/4
-baseline_bw_tdnn = swb_system.baselines["bw_tina_swb"](baseline_tdnn)
-assert isinstance(baseline_bw_tdnn, bw.ScaleConfig), "Did you forget to set the scale config?"
-baseline_bw_tdnn.tdp_scale = 0.05
-
-swb_system.run_exp(
-    name="baseline_bw_tdnn.3s",
-    crnn_config=baseline_bw_tdnn,
-    exp_config=exp_config,
+from i6_experiments.users.mann.nn.config import TINA_UPDATES_1K, TINA_NETWORK_CONFIG, TINA_UPDATES_SWB
+builder = (
+    ConfigBuilder(swb_system)
+    .set_tdnn()
+    .set_tina_scales()
+    .set_config_args(TINA_UPDATES_SWB)
+    .set_network_args(TINA_NETWORK_CONFIG)
+    .set_transcription_prior()
+    .set_specaugment()
 )
+baseline_bw_tdnn = builder.build()
 
-del baseline_bw_tdnn.config["adam"]
-swb_system.run_exp(
-    name="baseline_bw_tdnn.3s.nadam",
-    crnn_config=baseline_bw_tdnn,
-    exp_config=exp_config,
-)
+def baselines_3s():
+    for prior_scale in [0.0, 0.1, 0.3]:
+        conf = builder.copy().set_scales(prior_scale=prior_scale).build()
+        swb_system.run_exp(
+            name="baseline_bw_tdnn.3s.prior_scale-{}".format(prior_scale),
+            crnn_config=conf,
+            exp_config=exp_config,
+        )
 
-baseline_bw_tdnn.prior_scale = 0.2
-baseline_bw_tdnn.tdp_scale = 0.3
-swb_system.run_exp(
-    name="baseline_bw_tdnn.3s.scales",
-    crnn_config=baseline_bw_tdnn,
-    exp_config=exp_config,
-)
-
-baseline_bw_tdnn_povey = swb_system.baselines["bw_tina_swb_povey"](baseline_tdnn)
-baseline_bw_tdnn_povey.prior_scale = 0.2
-baseline_bw_tdnn_povey.tdp_scale = 0.3
-swb_system.run_exp(
-    name="baseline_bw_tdnn.3s.scales.povey",
-    crnn_config=baseline_bw_tdnn_povey,
-    exp_config=exp_config,
-)
-
-from recipe.i6_experiments.users.mann.nn.pretrain import PretrainConfigHolder
-baseline_bw_tdnn_3s_pretrain = PretrainConfigHolder(
-    config=baseline_bw_tdnn_povey,
-)
-baseline_bw_tdnn_3s_pretrain
-baseline_bw_tdnn_3s_pretrain.build_args.update(
-    static_lr=True, # use static learning rate
-)
-assert isinstance(baseline_bw_tdnn_3s_pretrain.config, bw.ScaleConfig)
-baseline_bw_tdnn_3s_pretrain.config.am_scale = 0.7
-baseline_bw_tdnn_3s_pretrain.warmup.final_am = 0.7
-baseline_bw_tdnn_3s_pretrain.config.tdp_scale = 1.0
-
-swb_system.run_exp(
-    name="baseline_bw_tdnn.3s.pretrain",
-    crnn_config=baseline_bw_tdnn_3s_pretrain,
-    exp_config=exp_config,
-)
+    baseline_bw_tdnn_povey = builder.copy().set_povey_prior().build()
+    swb_system.run_exp(
+        name="baseline_bw_tdnn.3s.scales.povey",
+        crnn_config=baseline_bw_tdnn_povey,
+        exp_config=exp_config,
+    )
 
 
 #--------------------------------- make 1s baseline -----------------------------------------------
@@ -154,45 +140,46 @@ baseline_bw_tdnn = swb_system.baselines["bw_tina_swb_povey"](baseline_tdnn)
 assert isinstance(baseline_bw_tdnn, bw.ScaleConfig)
 baseline_bw_tdnn.tdp_scale = 0.3
 
-swb_system.run_exp(
-    name="baseline_bw_tdnn.1s",
-    crnn_config=baseline_bw_tdnn,
-    exp_config=exp_config,
-)
+def baselines_1s():
+    swb_system.run_exp(
+        name="baseline_bw_tdnn.1s",
+        crnn_config=baseline_bw_tdnn,
+        exp_config=exp_config,
+    )
 
-baseline_bw_tdnn_nadam = copy.deepcopy(baseline_bw_tdnn)
-# del baseline_bw_tdnn_nadam.config["adam"]
-# swb_system.run_exp(
-#     name="baseline_bw_tdnn.1s.nadam",
-#     crnn_config=baseline_bw_tdnn_nadam,
-#     exp_config=exp_config,
-# )
+    baseline_bw_tdnn_nadam = copy.deepcopy(baseline_bw_tdnn)
+    # del baseline_bw_tdnn_nadam.config["adam"]
+    # swb_system.run_exp(
+    #     name="baseline_bw_tdnn.1s.nadam",
+    #     crnn_config=baseline_bw_tdnn_nadam,
+    #     exp_config=exp_config,
+    # )
 
-from recipe.i6_experiments.users.mann.nn.pretrain import PretrainConfigHolder
-baseline_bw_tdnn_1s_pretrain = PretrainConfigHolder(
-    config=baseline_bw_tdnn_nadam,
-)
-baseline_bw_tdnn_1s_pretrain.build_args.update(
-    static_lr=True, # use static learning rate
-)
-baseline_bw_tdnn_1s_pretrain.config.am_scale = 0.7
-baseline_bw_tdnn_1s_pretrain.warmup.final_am = 0.7
-baseline_bw_tdnn_1s_pretrain.config.tdp_scale = 1.0
+    from recipe.i6_experiments.users.mann.nn.pretrain import PretrainConfigHolder
+    baseline_bw_tdnn_1s_pretrain = PretrainConfigHolder(
+        config=baseline_bw_tdnn_nadam,
+    )
+    baseline_bw_tdnn_1s_pretrain.build_args.update(
+        static_lr=True, # use static learning rate
+    )
+    baseline_bw_tdnn_1s_pretrain.config.am_scale = 0.7
+    baseline_bw_tdnn_1s_pretrain.warmup.final_am = 0.7
+    baseline_bw_tdnn_1s_pretrain.config.tdp_scale = 1.0
 
-swb_system.run_exp(
-    name="baseline_bw_tdnn.1s.pretrain",
-    crnn_config=baseline_bw_tdnn_1s_pretrain,
-    exp_config=exp_config,
-)
+    swb_system.run_exp(
+        name="baseline_bw_tdnn.1s.pretrain",
+        crnn_config=baseline_bw_tdnn_1s_pretrain,
+        exp_config=exp_config,
+    )
 
-baseline_bw_tdnn_1s_pretrain_k = copy.deepcopy(baseline_bw_tdnn_1s_pretrain)
-baseline_bw_tdnn_1s_pretrain_k.warmup.absolute_scale = 0.1
+    baseline_bw_tdnn_1s_pretrain_k = copy.deepcopy(baseline_bw_tdnn_1s_pretrain)
+    baseline_bw_tdnn_1s_pretrain_k.warmup.absolute_scale = 0.1
 
-# swb_system.run_exp(
-#     name="baseline_bw_tdnn.1s.pretrain.abs_scale-0.1",
-#     crnn_config=baseline_bw_tdnn_1s_pretrain_k,
-#     exp_config=exp_config,
-# )
+    # swb_system.run_exp(
+    #     name="baseline_bw_tdnn.1s.pretrain.abs_scale-0.1",
+    #     crnn_config=baseline_bw_tdnn_1s_pretrain_k,
+    #     exp_config=exp_config,
+    # )
 
 
 #--------------------------------- test downsampling ----------------------------------------------
@@ -273,29 +260,30 @@ def set_downsampled_bw_training(config, fast_bw_args, recognition_args, drate, s
     fast_bw_args["acoustic_model_extra_config"] \
         = get_downsampled_tdps(drate, skip).to_acoustic_model_config()
 
-ts = helpers.TuningSystem(swb_system, {})
-ts.tune_parameter(
-    name="baseline_downsampled_bw.1s.drate",
-    crnn_config=baseline_bw_tdnn,
-    parameters=DRATES,
-    transformation=set_downsampled_bw_training,
-    training_args={
-        "num_classes": None,
-        "alignment": None
-    },
-    recognition_args={
-        **RECOG_ARGS,
-    },
-    fast_bw_args={
-        "acoustic_model_extra_config": tdp_model.to_acoustic_model_config(),
-        "fix_tdp_leaving_eps_arc": True,
-        "normalize_lemma_sequence_scores": False,
-    },
-    epochs=[12, 24, 48, 120, 240, 300, 320],
-    scorer_args={"prior_mixtures": None},
-    reestimate_prior="transcription",
-    dump_epochs=[4, 8, 12],
-)
+def downsampling():
+    ts = helpers.TuningSystem(swb_system, {})
+    ts.tune_parameter(
+        name="baseline_downsampled_bw.1s.drate",
+        crnn_config=baseline_bw_tdnn,
+        parameters=DRATES,
+        transformation=set_downsampled_bw_training,
+        training_args={
+            "num_classes": None,
+            "alignment": None
+        },
+        recognition_args={
+            **RECOG_ARGS,
+        },
+        fast_bw_args={
+            "acoustic_model_extra_config": tdp_model.to_acoustic_model_config(),
+            "fix_tdp_leaving_eps_arc": True,
+            "normalize_lemma_sequence_scores": False,
+        },
+        epochs=[12, 24, 48, 120, 240, 300, 320],
+        scorer_args={"prior_mixtures": None},
+        reestimate_prior="transcription",
+        dump_epochs=[4, 8, 12],
+    )
 
 
 # ts.tune_parameter(
