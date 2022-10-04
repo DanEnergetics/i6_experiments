@@ -487,6 +487,7 @@ class AllophoneCounts(Job):
         both_ambiguous_counts = Counter()
         lemma_start_counts = Counter()
         lemma_end_counts = Counter()
+        print("new routine")
             
         for segment in c.segments():
             phons = ["#"] * 2 + segment.orth.split(" ") + ["#"] * 2
@@ -501,8 +502,8 @@ class AllophoneCounts(Job):
                 is_final = (r1 == "#")
 
                 allo = lambda c, l, r: Allophone(c, l, r, is_initial, is_final).write_phon()
-                is_left_ambiguous = is_initial and (l2 != "#") and is_speech(c)
-                is_right_ambiguous = is_final and (r2 != "#") and is_speech(c)
+                is_left_ambiguous = is_initial and is_speech(c) and is_speech(l2)
+                is_right_ambiguous = is_final and is_speech(c) and is_speech(r2)
                 if is_left_ambiguous and is_right_ambiguous:
                     both_ambiguous_counts.update([allo(c, l2, r2)])
                 elif is_left_ambiguous:
