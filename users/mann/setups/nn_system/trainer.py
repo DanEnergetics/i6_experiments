@@ -116,6 +116,84 @@ class BaseTrainer(BaseTrainer):
         self.system.nn_checkpoints[feature_corpus][name] = j.out_checkpoints
         self.system.nn_configs[feature_corpus][name] = j.out_returnn_config_file
 
+class RasrTrainer(BaseTrainer):
+    @staticmethod
+    def write_rasr_train_config(
+        crp,
+        feature_flow_file,
+        alignment=None,
+        num_classes=None,
+        disregarded_classes=None,
+        class_label_file=None,
+        buffer_size=200 * 1024,
+        partition_epochs=None,
+        extra_rasr_config=None,
+        extra_rasr_post_config=None,
+        use_python_control=True,
+        **_ignored,
+    ):
+        kwargs = locals().copy()
+        del kwargs["feature_flow_file"], kwargs["extra_rasr_config"], kwargs["_ignored"]
+        extra_rasr_config = extra_rasr_config or RasrConfig()
+        extra_rasr_config.neural_network_trainer.feature_extraction.file = feature_flow_file
+        config, post_config = ReturnnRasrTrainingJob.create_config(
+            extra_rasr_config=extra_rasr_config,
+            **kwargs,
+        )
+        write_rasr_config = WriteRasrConfigJob(config, post_config)
+        return write_rasr_config.out_config
+    
+    @staticmethod
+    def get_rasr_dataset_config(crp, dataset_name, config_file, partition_epochs=None, estimated_num_seqs=None, **_ignored):
+        """ Returns a dataset config for use inside a returnn config.
+        
+        "function" attribute must be called such that the the config path is recognized by sisyphus
+        as a "Path" object. """ 
+        config_str = DelayedFormat(
+            "--config={} --*.LOGFILE=nn-trainer.{}.log --*.TASK=1",
+            config_file, dataset_name
+        )
+        dataset = { 
+            'class'                 : 'ExternSprintDataset',
+            'sprintTrainerExecPath' : RasrCommand.select_exe(crp.nn_trainer_exe, 'nn-trainer'),
+            'sprintConfigStr'       : config_str,
+        }
+        if partition_epochs is not None:
+            dataset["partitionEpoch"] = partition_epochs
+        if estimated_num_seqs is not None:
+            dataset["estimated_num_seqs"] = estimated_num_seqs
+        return dataset
+    
+    def make_rasr_dataset(self, name, corpus, feature_flow, **kwargs):
+        from i6_core.returnn import ReturnnRasrTrainingJob
+        from i6_experiments.users.mann.experimental.write import WriteFlowNetworkJob
+        feature_flow = self.system.feature_flows[corpus][feature_flow]
+        feature_flow = ReturnnRasrTrainingJob.create_flow(feature_flow=feature_flow, **kwargs)
+        write_feature_flow = WriteFlowNetworkJob(flow=feature_flow)
+        rasr_config_file = self.write_rasr_train_config(self.system.crp[corpus], write_feature_flow.out_network_file, **kwargs)
+        return self.get_rasr_dataset_config(self.system.crp[corpus], name, rasr_config_file, **kwargs)
+
+    def train(self, name, partition_epochs, returnn_config, feature_corpus, train_corpus, dev_corpus, num_classes=None, **kwargs):
+        num_classes = self.system.functor_value(num_classes)
+        returnn_config = copy.deepcopy(returnn_config)
+        training_args = ChainMap(locals().copy(), kwargs)
+        del training_args["self"], training_args["kwargs"]
+        if num_classes is not None:
+            returnn_config.config["num_outputs"]["classes"] = [self.system.functor_value(num_classes), 1]
+        for key, corpus in zip(["train", "dev"], [train_corpus, dev_corpus]):
+            returnn_config.config[key] = self.make_rasr_dataset(
+                key,
+                corpus,
+                partition_epochs=partition_epochs[key],
+                **kwargs,
+            )
+        # training_args.maps.insert(0, data)
+        j = self.train_helper(**training_args)
+        self.configs[name] = returnn_config
+        self.save_job(feature_corpus, name, j)
+
+
+
 class HdfAlignTrainer(BaseTrainer):
 
     def get_segments_pkl(self, overlay_name):

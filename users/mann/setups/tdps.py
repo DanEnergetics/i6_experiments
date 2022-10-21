@@ -308,7 +308,7 @@ class CombinedModel:
         return cls.from_weights(0.0, 3.0, 3.0, 0.0, 20.0, 30.0)
     
     @classmethod
-    def from_weights(cls, speech_fwd, speech_loop, silence_fwd, silence_loop, silence_exit, speech_skip=None, skip_normed=True):
+    def from_weights(cls, speech_fwd, speech_loop, silence_fwd, silence_loop, silence_exit, speech_skip=None, skip_normed=False):
         transition_model = SimpleTransitionModel.from_weights([speech_fwd, speech_loop], [silence_fwd, silence_loop])
         return cls(transition_model, silence_exit, speech_skip=speech_skip, skip_normed=skip_normed)
     

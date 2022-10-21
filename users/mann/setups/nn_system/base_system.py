@@ -29,6 +29,7 @@ import i6_experiments.users.mann.experimental.helpers as helpers
 from i6_experiments.users.mann.experimental.extractors import ExtractStateTyingStats
 from i6_core.lexicon.allophones import DumpStateTyingJob, StoreAllophonesJob
 from i6_experiments.users.mann.setups.tdps import CombinedModel
+from i6_experiments.users.mann.nn import bw
 
 from i6_core.meta.system import select_element
 # from i6_core.crnn.multi_sprint_training import PickleSegments
@@ -89,6 +90,9 @@ class AbstractConfig:
 
 	def replace(self, **kwargs):
 		return dataclasses.replace(self, **kwargs)
+	
+	def to_dict(self, **kwargs):
+		return dataclasses.asdict(self, **kwargs)
 
 @dataclasses.dataclass
 class RecognitionConfig(AbstractConfig):
@@ -99,6 +103,7 @@ class RecognitionConfig(AbstractConfig):
 	tdps : CombinedModel = NotSpecified
 	beam_pruning : float = NotSpecified
 	beam_pruning_threshold : Union[int, float] = NotSpecified
+	altas : Optional[float] = NotSpecified
 
 	def replace(self, **kwargs):
 		return dataclasses.replace(self, **kwargs)
@@ -116,6 +121,10 @@ class RecognitionConfig(AbstractConfig):
 		if self.tdps is not NotSpecified:
 			extra_rasr_config = out_dict.get("extra_config", rasr.RasrConfig())
 			extra_rasr_config["flf-lattice-tool.network.recognizer.acoustic-model"] = self.tdps.to_acoustic_model_extra_config()
+			out_dict["extra_config"] = extra_rasr_config
+		if self.altas is not NotSpecified:
+			extra_rasr_config = out_dict.get("extra_config", rasr.RasrConfig())
+			extra_rasr_config.flf_lattice_tool.network.recognizer.recognizer.acoustic_lookahead_temporal_approximation_scale = self.altas
 			out_dict["extra_config"] = extra_rasr_config
 		if self.lm_scale is not NotSpecified:
 			out_dict["lm_scale"] = self.lm_scale
@@ -198,8 +207,8 @@ class BaseSystem(RasrSystem):
 	def num_classes(self):
 		if self.get_state_tying() in self._num_classes_dict:
 			return self._num_classes_dict[self.get_state_tying()]
-		state_tying = DumpStateTyingJob(self.csp["train"]).out_state_tying
-		tk.register_output("state-tying_mono", state_tying)
+		state_tying = DumpStateTyingJob(self.crp["train"]).out_state_tying
+		# tk.register_output("state-tying_mono", state_tying)
 		num_states = ExtractStateTyingStats(state_tying).out_num_states
 		return num_states
 	
@@ -225,6 +234,14 @@ class BaseSystem(RasrSystem):
 		assert hasattr(trainer, "train"), "Trainer object must provide 'train' method"
 		self.trainer = trainer
 		self.trainer.set_system(self, **kwargs)
+	
+	def get_wer(self, name, epoch):
+		# print(self.jobs["dev"])
+		name = "scorer_crnn-{}-{}".format(name, epoch)
+		name += "-prior"
+		name += "-optlm"
+		scoring_job = self.jobs["dev"][name]
+		return scoring_job.out_wer
 
 	def set_initial_system(self, corpus='train', feature=None, alignment=None, 
 												prior_mixture=None, cart=None, allophones=None, 
@@ -363,9 +380,6 @@ class BaseSystem(RasrSystem):
 		if 'feature_dimension' not in self.default_scorer_args:
 			self.default_scorer_args['feature_dimension'] = window_size * 16
 
-		if 'flow' not in self.default_recognition_args:
-			self.default_recognition_args['flow'] = 'mfcc+context%d' % window_size
-
 		if dump:
 			overlay_name = 'crnn_train_dump'
 			self.add_overlay('crnn_train', overlay_name)
@@ -396,6 +410,45 @@ class BaseSystem(RasrSystem):
 		})
 		config_dict['target'] = 'classes'
 		config_dict['num_outputs']['classes'] = [self.functor_value(self.default_nn_training_args['num_classes']), 1]
+	
+	def compile_model(
+		self,
+		returnn_config,
+		alias=None,
+		adjust_output_layer="output",
+		**compile_args,
+	):
+		if hasattr(returnn_config, "build"):
+			config = returnn_config.build()
+		else:
+			config = copy.deepcopy(returnn_config)
+		config_dict = config.config
+		# Replace lstm unit to nativelstm2
+		lstm_flag = False
+		for layer in config_dict['network'].values():
+			unit = layer.get('unit', None)
+			if isinstance(unit, dict):
+				continue
+			if unit in {'lstmp'}:
+				layer['unit']='nativelstm2'
+				lstm_flag = True
+		# set output to log-softmax
+		if adjust_output_layer \
+				and config_dict['network'][adjust_output_layer]['class'] != 'rec':
+			config_dict['network'][adjust_output_layer].update({
+				'class': 'linear',
+				'activation': 'log_softmax'
+			})
+			config_dict['target'] = 'classes'
+		config_dict['num_outputs']['classes'] = [self.num_classes(), 1]
+		compile_graph_job = crnn.CompileTFGraphJob(
+			config, **compile_args
+		)
+		if alias is not None:
+			alias = f"compile_returnn/{alias}"
+			compile_graph_job.add_alias(alias)
+			self.jobs["train"][alias.replace("/", "_")] = compile_graph_job
+		return compile_graph_job.out_graph
 
 	def get_tf_flow(
 			self, feature_flow, crnn_config, model,  output_tensor_name=None , 
@@ -424,14 +477,11 @@ class BaseSystem(RasrSystem):
 				layer['unit']='nativelstm2'
 				lstm_flag = True
 		# set output to log-softmax
-		if adjust_output_layer \
-				and config_dict['network'][adjust_output_layer]['class'] != 'rec':
+		if adjust_output_layer:
 			config_dict['network'][adjust_output_layer].update({
 				'class': 'linear',
 				'activation': 'log_softmax'
 			})
-			# config_dict['network']['output']['class'] = 'linear'
-			# config_dict['network']['output']['activation'] = 'log_softmax'
 			config_dict['target'] = 'classes'
 		config_dict['num_outputs']['classes'] = [self.num_classes(), 1]
 		window = config_dict.get('window', 1)
@@ -445,9 +495,9 @@ class BaseSystem(RasrSystem):
 			config, **compile_args
 		)
 		if alias is not None:
-			alias = f"compile_crnn-{alias}"
+			alias = f"compile_returnn/{alias}"
 			compile_graph_job.add_alias(alias)
-			self.jobs["dev"][alias] = compile_graph_job
+			self.jobs["train"][alias.replace("/", "_")] = compile_graph_job
 		
 		if not add_tf_flow:
 			return feature_flow
@@ -598,7 +648,7 @@ class BaseSystem(RasrSystem):
 
 		with tk.block('NN - %s' % name):
 			if alt_training:
-				reestimate_prior = "alt"
+				reestimate_prior = {"CRNN": "alt"}.get(reestimate_prior, reestimate_prior)
 				self.trainer.train(**train_args)
 			else:
 				self.train_nn(**train_args)
@@ -640,7 +690,8 @@ class BaseSystem(RasrSystem):
 		return score_features
 			
 	def decode(
-			self, name, epoch,
+			self,
+			name, epoch,
 			crnn_config,
 			training_args, scorer_args,
 			recognition_args,
@@ -685,7 +736,7 @@ class BaseSystem(RasrSystem):
 
 		recog_args = copy.deepcopy(self.default_recognition_args)
 		# copy feature flow used in training
-		recog_args['flow'] = training_args['feature_flow']
+		# recog_args['flow'] = training_args['feature_flow']
 		if 'search_parameters' in recognition_args:
 			recog_args['search_parameters'].update(recognition_args['search_parameters'])
 			remaining_args = copy.copy(recognition_args)
@@ -694,34 +745,37 @@ class BaseSystem(RasrSystem):
 		else:
 			recog_args.update(recognition_args)
 		recog_args['name']           = 'crnn-%s%s' % (recog_name, '-prior' if reestimate_prior else '')
-		feature_flow_net = meta.system.select_element(self.feature_flows, recog_args['corpus'], recog_args['flow'])
-		model = self.jobs[training_args['feature_corpus']]['train_nn_%s' % name].out_models[epoch]
-		compile_args = copy.deepcopy(compile_args)
-		if compile_crnn_config is None:
-			compile_crnn_config = crnn_config
-		compile_network_extra_config = compile_args.pop('compile_network_extra_config', {})
-		compile_crnn_config.config['network'].update(compile_network_extra_config)
-		if "alias" in compile_args and not isinstance(compile_args['alias'], str):
-			compile_args['alias'] = name
-		recog_args['flow'] = tf_flow = self.get_tf_flow(
-			feature_flow_net, compile_crnn_config, model, 
-			recog_args.pop('output_tensor_name', None), 
-			drop_layers=recog_args.pop('drop_layers', None),
-			req_libraries=recog_args.pop('req_libraries', NotSpecified),
-			**compile_args,
-		)
+		if 'flow' not in recog_args:
+			feature_flow_net = meta.system.select_element(self.feature_flows, recog_args['corpus'], training_args['feature_flow'])
+			model = self.jobs[training_args['feature_corpus']]['train_nn_%s' % name].out_models[epoch]
+			compile_args = copy.deepcopy(compile_args)
+			if compile_crnn_config is None:
+				compile_crnn_config = crnn_config
+			compile_network_extra_config = compile_args.pop('compile_network_extra_config', {})
+			compile_crnn_config.config['network'].update(compile_network_extra_config)
+			compile_args.setdefault("alias", name)
+			recog_args['flow'] = tf_flow = self.get_tf_flow(
+				feature_flow_net, compile_crnn_config, model, 
+				recog_args.pop('output_tensor_name', None), 
+				drop_layers=recog_args.pop('drop_layers', None),
+				req_libraries=recog_args.pop('req_libraries', NotSpecified),
+				**compile_args,
+			)
 		if score_args['prior_mixtures'] is not None:
 			prior_mixtures = select_element(self.mixtures, training_args['feature_corpus'], score_args['prior_mixtures']) 
 		else:
 			from i6_core.mm import CreateDummyMixturesJob
 			prior_mixtures = CreateDummyMixturesJob(self.num_classes(), self.num_input).out_mixtures
-		recog_args['feature_scorer'] = scorer = sprint.PrecomputedHybridFeatureScorer(
-			prior_mixtures=prior_mixtures,
-			priori_scale=score_args.get('prior_scale', 0.),
-			# prior_file=score_features.prior if reestimate_prior else None,
-			prior_file=select_element(self.nn_priors, training_args['feature_corpus'], score_args.get("prior_file", None), epoch),
-			scale=score_args.get('mixture_scale', 1.0),
-		)
+		if 'feature_scorer' not in recog_args:
+			recog_args['feature_scorer'] = scorer = sprint.PrecomputedHybridFeatureScorer(
+				prior_mixtures=prior_mixtures,
+				priori_scale=score_args.get('prior_scale', 0.),
+				# prior_file=score_features.prior if reestimate_prior else None,
+				prior_file=select_element(self.nn_priors, training_args['feature_corpus'], score_args.get("prior_file", None), epoch),
+				scale=score_args.get('mixture_scale', 1.0),
+			)
+		else:
+			scorer = recog_args['feature_scorer']
 		self.feature_scorers[training_args['feature_corpus']][scorer_name] = scorer
 
 		extra_rqmts = recog_args.pop('extra_rqmts', {})
@@ -919,6 +973,7 @@ class ConfigBuilder:
 		self.network_args = {}
 		self.scales = {}
 		self.encoder = None
+		self.prior = "povey"
 		self.transforms = []
 
 	def set_ffnn(self):
@@ -946,13 +1001,19 @@ class ConfigBuilder:
 		return self
 	
 	def set_transcription_prior(self):
-		self.transforms.append(self.system.prior_system.add_to_config)
+		# self.transforms.append(self.system.prior_system.add_to_config)
+		self.prior = "transcription"
 		return self
 	
 	def set_povey_prior(self):
-		self.transforms = [
-			t for t in self.transforms if t != self.system.prior_system.add_to_config
-		]
+		# self.transforms = [
+		# 	t for t in self.transforms if t != self.system.prior_system.add_to_config
+		# ]
+		self.prior = "povey"
+		return self
+	
+	def set_no_prior(self):
+		self.prior = None
 		return self
 	
 	def set_scales(self, **scales):
@@ -974,6 +1035,7 @@ class ConfigBuilder:
 		new_instance.scales = self.scales.copy()
 		new_instance.transforms = self.transforms.copy()
 		new_instance.encoder = self.encoder
+		new_instance.prior = self.prior
 		return new_instance
 	
 	def set_oclr(self):
@@ -995,11 +1057,17 @@ class ConfigBuilder:
 		# viterbi_config = viterbi_lstm(num_input, network_kwargs=network_kwargs, **kwargs)
 		viterbi_config_dict = self.encoder(self.system.num_input, network_kwargs=self.network_args, **kwargs)
 
+		assert self.prior in ["povey", "transcription", None], "Unknown prior: {}".format(self.prior)
+
 		bw_config = bw.ScaleConfig.copy_add_bw(
 			viterbi_config_dict, self.system.csp["train"],
 			num_classes=self.system.num_classes(),
-			**self.scales
+			prior=self.prior,
+			**self.scales,
 		)
+
+		if self.prior == "transcription":
+			self.system.prior_system.add_to_config(bw_config)
 
 		for transform in self.transforms:
 			transform(bw_config)
@@ -1211,6 +1279,7 @@ class NNSystem(BaseSystem):
 			reestimate_prior='CRNN', optimize=True, use_tf_flow=True,
 			compile_crnn_config=None, plugin_args=None,
 			fast_bw_args={},
+			alt_training=False,
 			dump_epochs=None, dump_args=None,
 			label_sync_decoding=False, **kwargs):
 		# experimental
@@ -1260,12 +1329,19 @@ class NNSystem(BaseSystem):
 			if any(layer['class'] == 'fast_bw' for layer in crnn_config.config['network'].values()) \
 				and 'additional_rasr_config_files' not in training_args:
 				additional_sprint_config_files, additional_sprint_post_config_files \
-					= add_fastbw_configs(self.csp['train'], **fast_bw_args) # TODO: corpus dependent and training args
-				training_args = {
-					**training_args,
-					'additional_rasr_config_files':      additional_sprint_config_files,
-					'additional_rasr_post_config_files': additional_sprint_post_config_files,
-				}
+					= add_fastbw_configs(self.csp[fast_bw_args.pop("corpus", "train")], **fast_bw_args) # TODO: corpus dependent and training args
+				if alt_training:
+					assert isinstance(crnn_config, bw.ScaleConfig)
+					crnn_config = crnn_config.set_rasr_config(additional_sprint_config_files["fastbw"], additional_sprint_post_config_files["fastbw"])
+					print(name, crnn_config)
+				else:
+					training_args = {
+						**training_args,
+						'additional_rasr_config_files':      additional_sprint_config_files,
+						'additional_rasr_post_config_files': additional_sprint_post_config_files,
+					}
+
+				
 			# del tdp from train config
 			self.crp["train"].acoustic_model_config = self.crp["base"].acoustic_model_config._copy()
 			del self.crp["train"].acoustic_model_config.tdp
@@ -1275,7 +1351,7 @@ class NNSystem(BaseSystem):
 			j = super().nn_and_recog(
 				name, training_args, crnn_config, scorer_args, recognition_args, epochs=epochs, 
 				reestimate_prior=reestimate_prior, optimize=optimize, use_tf_flow=use_tf_flow, compile_args=compile_args,
-				compile_crnn_config=compile_crnn_config,
+				compile_crnn_config=compile_crnn_config, alt_training=alt_training,
 				label_sync_decoding=label_sync_decoding, **kwargs)
 
 			if dump_epochs is None:

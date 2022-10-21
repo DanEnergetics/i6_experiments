@@ -1,7 +1,7 @@
 import copy
 from collections import ChainMap
 
-from sisyphus import tk, Job, Task, gs
+from sisyphus import tk, Job, Task, gs, delayed_ops
 
 from i6_core.returnn import ReturnnForwardJob, ReturnnRasrTrainingJob
 from i6_core.rasr import WriteRasrConfigJob
@@ -12,12 +12,25 @@ from i6_experiments.users.mann.experimental.sequence_training import add_fastbw_
 from i6_experiments.users.mann.experimental.plots import PlotSoftAlignmentJob
 from i6_core.lexicon.allophones import StoreAllophonesJob, DumpStateTyingJob
 
+from i6_experiments.users.mann.nn import preload
+
 def setup_datasets(system: NNSystem):
     """Make Rasr datasets into dicts for forward job."""
     pass
 
 def dump_model(system: NNSystem, model: str, epoch: int):
     pass
+
+class DelayedLearningRates(delayed_ops.Delayed):
+
+    def get(self):
+        def EpochData(learningRate, error):
+            return {"learning_rate": learningRate, "error": error}
+
+        with open(self.a.get(), "rt") as lr_file:
+            text = lr_file.read()
+
+        return eval(text)
 
 
 class HdfDumpster:
@@ -81,6 +94,18 @@ class HdfDumpster:
     ):
         pass
 
+    def init_score_segments(self):
+        self.scores = {}
+        from i6_core.corpus import ShuffleAndSplitSegmentsJob
+        new_segments = ShuffleAndSplitSegmentsJob(
+            segment_file=self.system.crp["crnn_train"].segment_path,
+            split={"train": 0.01, "dev": 0.2, "rest": 0.79},
+        )
+        for key in ["train", "dev"]:
+            overlay_name = "returnn_score_{}".format(key)
+            self.system.add_overlay("crnn_train", overlay_name)
+            self.system.crp[overlay_name].segment_path = new_segments.out_segments[key]
+
     def instantiate_fast_bw_layer(self, returnn_config, fast_bw_args):
         fastbw_config, fastbw_post_config \
             = add_fastbw_configs(self.system.csp['train'], **fast_bw_args) # TODO: corpus dependent and training args
@@ -125,6 +150,36 @@ class HdfDumpster:
         )
         out = {name.rstrip(".hdf"): file for name, file in forward_job.out_hdf_files.items()}
         return out
+    
+    def score(self, name, returnn_config, epoch, training_args={}, fast_bw_args={}, **kwargs):
+        score_config = copy.deepcopy(self.system.nn_config_dicts["train"][name])
+        if returnn_config is not None:
+            score_config = copy.deepcopy(returnn_config)
+        score_config.config["learning_rate"] = 0
+        del score_config.config["learning_rates"]
+        preload.set_preload(self.system, score_config, (name, epoch))
+
+        extra_training_args = {
+            "train_corpus": "returnn_score_train",
+            "dev_corpus": "returnn_score_dev",
+            "num_epochs": 1,
+            "time_rqmt": 1,
+        }
+
+        scoring_name = "-".join((name, "score"))
+        self.system.nn_and_recog(
+            name=scoring_name,
+            crnn_config=score_config,
+            epochs=[],
+            training_args=ChainMap(extra_training_args, training_args),
+            fast_bw_args=fast_bw_args,
+            **kwargs
+        )
+
+        score_job = self.system.jobs["train"]["train_nn_" + scoring_name]
+
+        self.scores[name] = DelayedLearningRates(score_job.out_learning_rates)[1]["error"]
+
     
     def plot(self,
         name,

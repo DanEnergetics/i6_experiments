@@ -90,7 +90,7 @@ default_scorer_args = {
 
 default_recognition_args = {
     'corpus': 'dev',
-    'flow': 'gt',
+    # 'flow': 'gt',
     'pronunciation_scale': 3.0,
     'lm_scale': 5.0,
     'search_parameters': {

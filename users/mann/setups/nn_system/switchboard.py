@@ -44,7 +44,7 @@ default_scorer_args = {
 
 default_recognition_args = {
     'corpus': 'dev',
-    'flow': 'gt',
+    # 'flow': 'gt',
     'pronunciation_scale': 1.0,
     'lm_scale': 10.,
     'search_parameters': {
@@ -90,7 +90,8 @@ default_mono_mixture_path = Path(PREFIX_PATH_asr4 + "mm/mixtures/EstimateMixture
 default_feature_paths = {
     'train': PREFIX_PATH + "features/extraction/FeatureExtraction.Gammatone.Jlfrg2riiRX3/output/gt.cache.bundle",
     'dev'  : PREFIX_PATH + "features/extraction/FeatureExtraction.Gammatone.dVkMNkHYPXb4/output/gt.cache.bundle",
-    'eval' : PREFIX_PATH + "features/extraction/FeatureExtraction.Gammatone.O4lUG0y7lrKt/output/gt.cache.bundle"
+    'eval' : PREFIX_PATH + "features/extraction/FeatureExtraction.Gammatone.O4lUG0y7lrKt/output/gt.cache.bundle",
+    "dev_extra": "/work/asr4/raissi/ms-thesis-setups/lm-sa-swb/dependencies/cv-from-hub5-00/features/gammatones/FeatureExtraction.Gammatone.pp9W8m2Z8mHU/output/gt.cache.bundle",
 }
 
 RETURNN_PYTHON_HOME = Path('/work/tools/asr/python/3.8.0_tf_1.15-generic+cuda10.1')
