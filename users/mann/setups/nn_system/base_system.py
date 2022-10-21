@@ -148,6 +148,7 @@ class ExpConfig(AbstractConfig):
 	scorer_args: dict = None
 	reestimate_prior: str = None
 	dump_epochs: list = None
+	alt_training: bool = False
 
 	def extend(self, **extensions):
 		changes = {key: {**getattr(self, key), **value} for key, value in extensions.items()}

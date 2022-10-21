@@ -12,6 +12,7 @@ from recipe.i6_core import returnn
 from recipe.i6_core import meta
 
 from recipe.i6_experiments.common.setups.rasr.util import RasrDataInput
+from .common import init_segment_order_shuffle
 
 SCTK_PATH = Path('/u/beck/programs/sctk-2.4.0/bin/')
 
@@ -235,6 +236,52 @@ def get_bw_switchboard_system():
     system.prior_system = prior.PriorSystem(system, TOTAL_FRAMES)
     system.default_nn_training_args["num_epochs"] = 300
     return system
+
+def init_extended_train_corpus(system, reinit_shuffle=True):
+    overlay_name = "train_magic"
+    system.add_overlay("train", overlay_name)
+
+    from recipe.i6_core import features
+    from recipe.i6_core import corpus
+
+    cv_feature_bundle = "/work/asr4/raissi/ms-thesis-setups/lm-sa-swb/dependencies/cv-from-hub5-00/features/gammatones/FeatureExtraction.Gammatone.pp9W8m2Z8mHU/output/gt.cache.bundle"
+    overlay_name = "returnn_train_magic"
+    system.add_overlay("train_magic", overlay_name)
+    system.crp[overlay_name].concurrent = 1
+    system.crp[overlay_name].corpus_config = corpus_config = system.crp[overlay_name].corpus_config._copy()
+    system.crp[overlay_name].segment_path = corpus.SegmentCorpusJob(corpus_config.file, num_segments=1).out_single_segment_files[1]
+
+    overlay_name = "returnn_cv_magic"
+    system.add_overlay("dev", overlay_name)
+    system.crp[overlay_name].concurrent = 1
+    system.crp[overlay_name].segment_path = "/work/asr4/raissi/ms-thesis-setups/lm-sa-swb/dependencies/cv-from-hub5-00/zhou-files-dev/segments"
+    system.crp[overlay_name].corpus_config = corpus_config = system.crp[overlay_name].corpus_config._copy()
+    system.crp[overlay_name].corpus_config.file = "/work/asr4/raissi/ms-thesis-setups/lm-sa-swb/dependencies/cv-from-hub5-00/zhou-files-dev/hub5_00.corpus.cleaned.gz"
+    system.crp[overlay_name].acoustic_model_config = system.crp[overlay_name].acoustic_model_config._copy()
+    del system.crp[overlay_name].acoustic_model_config.tdp
+    system.feature_bundles[overlay_name]["gt"] = tk.Path(cv_feature_bundle, cached=True)
+    system.feature_flows[overlay_name]["gt"] = flow = features.basic_cache_flow(tk.Path(cv_feature_bundle, cached=True))
+
+    merged_corpus = corpus.MergeCorporaJob(
+        [system.crp[f"returnn_{k}_magic"].corpus_config.file for k in ["train", "cv"]],
+        name="switchboard-1",
+        merge_strategy=corpus.MergeStrategy.FLAT,
+    ).out_merged_corpus
+    system.crp["train_magic"].corpus_config = corpus_config = system.crp["train_magic"].corpus_config._copy()
+    system.crp["train_magic"].corpus_config.file = merged_corpus
+
+    if reinit_shuffle:
+        init_segment_order_shuffle(system, "returnn_train_magic", 300)
+    
+    from i6_experiments.users.mann.setups.nn_system.trainer import RasrTrainer
+    system.set_trainer(RasrTrainer())
+
+    return {
+        "feature_corpus": "train_magic",
+        "train_corpus": "returnn_train_magic",
+        "dev_corpus": "returnn_cv_magic",
+    }
+
 
 
 from collections import UserDict
