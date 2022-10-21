@@ -1,4 +1,5 @@
 import copy
+from itertools import product
 
 from sisyphus import *
 
@@ -6,6 +7,7 @@ from i6_experiments.users.mann.setups.swb.swbsystem import SWBNNSystem
 from i6_experiments.users.mann.setups.nn_system.base_system import NNSystem, ExpConfig
 from i6_experiments.users.mann.experimental import helpers
 from i6_experiments.users.mann.setups import tdps
+from i6_experiments.users.mann.setups.tdps import CombinedModel, SimpleTransitionModel
 
 from i6_experiments.users.mann.setups.nn_system.switchboard import get_legacy_switchboard_system, make_cart
 from i6_experiments.users.mann.nn.config.tdnn import make_baseline
@@ -206,6 +208,41 @@ def set_tdps(am: rasr.RasrConfig, drate: int, skip=False, adjust_silence_exit=Fa
         tdps.Transition.from_fwd_prob(1 / (1 + 60 / drate)).to_rasr_config()
     )
 
+class TdpsSetter:
+    def __init__(self, drate: int):
+        self.drate = drate
+    
+    def set_tdps_comp(self, recognition_args, tdps):
+        spf, spl = tdps
+        tdps = CombinedModel.from_weights(
+            speech_fwd=spf,
+            speech_loop=spl,
+            silence_fwd=3.0,
+            silence_loop=0.0,
+            speech_skip=30.0,
+            silence_exit=30.0 / self.drate
+        )
+        extra_config = recognition_args.get("extra_config", rasr.RasrConfig())
+        extra_config["flf-lattice-tool.network.recognizer.acoustic-model"] = tdps.to_acoustic_model_config()
+        recognition_args["extra_config"] = extra_config
+
+tdp_params = list(product(
+    [-1.0, 0.0, 1.0],
+    [-1.0, 0.0, 0.5, 1.0],
+))
+
+tdp_params_drate_1 = list(product(
+    [-1.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
+    [-1.0, 0.0, 0.5, 1.0],
+))
+
+def set_tdp_scale(recognition_args, scale):
+    extra_config = recognition_args.get("extra_config", rasr.RasrConfig())
+    extra_config["flf-lattice-tool.network.recognizer.acoustic-model.tdp.scale"] = scale
+    recognition_args["extra_config"] = extra_config
+
+tdp_scales = [0.1, 0.3, 0.5, 0.7, 1.0]
+
 NUM_FRAMES = 91026136
 BASE_EPOCH = 240
 BASE_TRAINING = "baseline_viterbi_tdnn.1s"
@@ -296,6 +333,50 @@ for drate in [1, 2, 3, 4, 6, 8]:
             )
             for skip in skip_parameters
         }
+    
+    if drate in [1, 3]:
+        recognition_args={
+            **recog_args,
+            **extra_recog_args,
+            "lm_scale": adjust_lm_scale(BASE_LMS, drate),
+            "extra_config": extra_config,
+        }
+        ts.tune_parameter(
+            name="recog_drate-{}.sp-tdps".format(drate),
+            crnn_config=baseline_tdnn,
+            parameters=tdp_params if drate > 1 else tdp_params_drate_1,
+            transformation=TdpsSetter(drate).set_tdps_comp,
+            procedure=helpers.Recog(BASE_EPOCH, BASE_TRAINING),
+            compile_args=compile_args,
+            compile_crnn_config=base_compile_config,
+            recognition_args=recognition_args,
+            # scorer_args={"prior_mixtures": None},
+            scorer_args={},
+            optimize=False,
+            reestimate_prior="CRNN" 
+        )
+
+        sp_tdps = {
+            1: (1.0, 0.0),
+            3: (0.0, 1.0),
+        }
+
+        TdpsSetter(drate).set_tdps_comp(recognition_args, sp_tdps[drate])
+
+        ts.tune_parameter(
+            name="recog_drate-{}.tdp_scale".format(drate),
+            crnn_config=baseline_tdnn,
+            parameters=tdp_scales,
+            transformation=set_tdp_scale,
+            procedure=helpers.Recog(BASE_EPOCH, BASE_TRAINING),
+            compile_args=compile_args,
+            compile_crnn_config=base_compile_config,
+            recognition_args=recognition_args,
+            # scorer_args={"prior_mixtures": None},
+            scorer_args={},
+            optimize=False,
+            reestimate_prior="CRNN" 
+        )
 
 from i6_core import util
 class SkipReport:

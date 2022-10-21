@@ -83,7 +83,7 @@ exp_config = ExpConfig(
     scorer_args={
         "prior_mixtures": None,
         "prior_file": recog_prior.prior_xml_file, },
-    reestimate_prior="transcription",
+    reestimate_prior=False,
     dump_epochs=[4, 8, 12],
 )
 
