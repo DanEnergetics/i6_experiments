@@ -190,6 +190,7 @@ def get_prior_from_transcription_new(
 
 
 class PriorFromTranscriptionCounts(Job):
+    __sis_hash_exclude__ = { "eps": 0.0 }
     def __init__(
         self,
         allophone_counts,
@@ -198,6 +199,7 @@ class PriorFromTranscriptionCounts(Job):
         num_frames,
         average_phoneme_frames=8,
         hmm_partition=None,
+        eps=0.0,
         silence_phoneme="[SILENCE]"
     ):
         self.allophone_counts = allophone_counts
@@ -206,6 +208,7 @@ class PriorFromTranscriptionCounts(Job):
         self.num_frames = num_frames
         self.average_phoneme_frames = average_phoneme_frames
         self.hmm_partition = hmm_partition
+        self.eps = eps
         self.silence_phoneme = silence_phoneme
 
         self.out_prior_txt_file = self.output_path("prior.txt")
@@ -243,6 +246,9 @@ class PriorFromTranscriptionCounts(Job):
         for i in range(num_states):
             if i != silence_idx:
                 counts[i] *= (1 - counts[silence_idx])
+            counts[i] += self.eps
+        
+        # save
         import numpy as np
         np.savetxt(self.out_prior_txt_file.get_path(), counts, delimiter=" ")
         with open(self.out_prior_xml_file.get_path(), "wt") as f:
@@ -274,6 +280,7 @@ def get_prior_from_transcription_job(
     total_frames=None,
     hmm_partition=None,
     lemma_end_prob=0.0,
+    eps=0.0,
 ):
     transcribe_job = ApplyLexiconToCorpusJob(
         system.csp["train"].corpus_config.file,
@@ -295,6 +302,7 @@ def get_prior_from_transcription_job(
         dst.out_state_tying,
         num_frames=total_frames,
         hmm_partition=hmm_partition,
+        eps=eps,
     )
 
     tk.register_output("prior_from_transcription", prior_job.out_prior_txt_file)
@@ -310,7 +318,7 @@ class PriorSystem:
     def __init__(self,
         system,
         total_frames=None,
-        eps=None,
+        eps=0.0,
         extra_hmm_partition=None,
         lemma_end_probability=0.0,
     ):
@@ -319,6 +327,7 @@ class PriorSystem:
         self.eps = eps
         self.hmm_partition = extra_hmm_partition
         self.lemma_end_probability = lemma_end_probability
+        self._eps = None
         self.extract_prior()
     
     def extract_prior(self):
@@ -327,7 +336,8 @@ class PriorSystem:
             self.system,
             total_frames=self.total_frames,
             hmm_partition=self.hmm_partition,
-            lemma_end_prob=self.lemma_end_probability
+            lemma_end_prob=self.lemma_end_probability,
+            eps=self.eps,
         )
         self.prior_txt_file = self.prior_files["txt"]
         self.prior_xml_file = self.prior_files["xml"]
@@ -336,4 +346,4 @@ class PriorSystem:
     def add_to_config(self, config):
         from i6_experiments.users.mann.nn import prior
         prior.prepare_static_prior(config, prob=True)
-        prior.add_static_prior(config, self.prior_txt_file, eps=self.eps)
+        prior.add_static_prior(config, self.prior_txt_file, eps=self._eps)
