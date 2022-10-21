@@ -2,6 +2,7 @@ __all__ = ["FHDecoder"]
 
 import copy
 from IPython import embed
+from dataclasses import dataclass
 
 from sisyphus import *
 
@@ -13,6 +14,7 @@ import i6_core.am as am
 import i6_core.lm as lm
 import i6_core.mm as mm
 import i6_core.corpus as corpus_recipes
+from i6_core import returnn
 
 from i6_experiments.users.raissi.setups.common.helpers.pipeline_data import (
     ContextEnum,
@@ -117,6 +119,22 @@ def get_feature_scorer(context_type, context_mapper, featureScorerConfig, mixtur
 class FHDecoder:
     default_tm = {"right": "right", "center": "center", "left": "left"}
 
+    @dataclass
+    class TensorMapping:
+        encoder_output: str="concat_fwd_6_bwd_6/concat_sources/concat"
+        encoder_posteriors: str="encoder-output"
+        center_state_posteriors: str="center-output"
+        delta_posteriors: str="delta_ce"
+        delta_encoder_output: str="concat_fwd_delta_bwd_delta/concat_sources/concat"
+        delta_encoder_posteriors: str="deltaEncoder-output"
+
+        def __post_init__(self):
+            attrs = self.__dict__
+            for k in attrs:
+                if k.endswith("posteriors") and "/output" not in attrs[k]:
+                    attrs[k] += "/output_batch_major"
+            
+
     def __init__(
         self,
         name,
@@ -132,6 +150,7 @@ class FHDecoder:
         gpu=True,
         tm=default_tm,
         output_string="output/output_batch_major",
+        tensor_mapping=TensorMapping(),
         is_multi_encoder_output=False,
         silence_id=40,
     ):
@@ -165,6 +184,8 @@ class FHDecoder:
 
         # LM attributes
         self.tfrnn_lms = {}
+
+        self.tensor_mapping = tensor_mapping
 
         # setting other attributes
         self.set_tf_fs_flow(feature_path, model_path, graph)
@@ -239,8 +260,9 @@ class FHDecoder:
         self.featureScorerFlow = tfFeatureFlow
 
     def get_tf_flow(self, model_path, graph):
-
-        stringModelPath = rasr.StringWrapper(model_path, Path(model_path + ".meta"))
+        stringModelPath = model_path
+        if not isinstance(model_path, returnn.Checkpoint):
+            stringModelPath = rasr.StringWrapper(model_path, Path(model_path + ".meta"))
 
         tfFlow = rasr.FlowNetwork()
         tfFlow.add_input("input-features")
@@ -265,7 +287,7 @@ class FHDecoder:
         tfFlow.config[tfFwd].output_map.info_0.param_name = "encoder-output"
         tfFlow.config[
             tfFwd
-        ].output_map.info_0.tensor_name = "encoder-output/output_batch_major"
+        ].output_map.info_0.tensor_name = self.tensor_mapping.encoder_posteriors # "encoder-output/output_batch_major"
 
         tfFlow.config[tfFwd].loader.type = "meta"
         tfFlow.config[tfFwd].loader.meta_graph_file = graph
@@ -275,8 +297,9 @@ class FHDecoder:
         return tfFlow
 
     def get_tf_flow_delta(self, model_path, graph):
-
-        stringModelPath = rasr.StringWrapper(model_path, Path(model_path + ".meta"))
+        stringModelPath = model_path
+        if not isinstance(model_path, returnn.Checkpoint):
+            stringModelPath = rasr.StringWrapper(model_path, Path(model_path + ".meta"))
 
         tfFlow = rasr.FlowNetwork()
         tfFlow.add_input("input-features")
@@ -310,12 +333,12 @@ class FHDecoder:
         tfFlow.config[tfFwd].output_map.info_0.param_name = "encoder-output"
         tfFlow.config[
             tfFwd
-        ].output_map.info_0.tensor_name = "encoder-output/output_batch_major"
+        ].output_map.info_0.tensor_name = self.tensor_mapping.encoder_posteriors # "encoder-output/output_batch_major"
 
         tfFlow.config[tfFwd].output_map.info_1.param_name = "deltaEncoder-output"
         tfFlow.config[
             tfFwd
-        ].output_map.info_1.tensor_name = "deltaEncoder-output/output_batch_major"
+        ].output_map.info_1.tensor_name = self.tensor_mapping.delta_encoder_posteriors # "deltaEncoder-output/output_batch_major"
 
         tfFlow.config[tfFwd].loader.type = "meta"
         tfFlow.config[tfFwd].loader.meta_graph_file = graph
@@ -330,9 +353,7 @@ class FHDecoder:
         del fsTfConfig.input_map
         #input is the same for each model, since the label embeddings are calculated from the dense label identity
         fsTfConfig.input_map.info_0.param_name = "encoder-output"
-        fsTfConfig.input_map.info_0.tensor_name = (
-            "concat_fwd_6_bwd_6/concat_sources/concat"
-        )
+        fsTfConfig.input_map.info_0.tensor_name = self.tensor_mapping.encoder_output
         #monophone does not have any context
         if self.context_type.value not in [self.context_mapper.get_enum(i) for i in [1, 7]]:
             fsTfConfig.input_map.info_1.param_name = "dense-classes"
@@ -342,13 +363,11 @@ class FHDecoder:
 
         if self.context_type.value in [self.context_mapper.get_enum(i) for i in [1,7]] :
             fsTfConfig.output_map.info_0.param_name = "center-state-posteriors"
-            fsTfConfig.output_map.info_0.tensor_name = ("-").join(
-                [self.tm["center"], self.output_string]
-            )
+            fsTfConfig.output_map.info_0.tensor_name = self.tensor_mapping.center_state_posteriors
             if self.context_type.value == self.context_mapper.get_enum(7):
                 #add the delta outputs
                 fsTfConfig.output_map.info_1.param_name = "delta-posteriors"
-                fsTfConfig.output_map.info_1.tensor_name = "delta_ce/output_batch_major"
+                fsTfConfig.output_map.info_1.tensor_name = self.tensor_mapping.delta_posteriors
 
         if self.context_type.value in [self.context_mapper.get_enum(i) for i in [2, 8]]:
             fsTfConfig.output_map.info_0.param_name = "center-state-posteriors"
@@ -416,12 +435,12 @@ class FHDecoder:
                 or self.context_type.value == self.context_mapper.get_enum(1):
                 fsTfConfig.input_map.info_1.param_name = "deltaEncoder-output"
                 fsTfConfig.input_map.info_1.tensor_name = (
-                    "concat_fwd_delta_bwd_delta/concat_sources/concat"
+                    self.tensor_mapping.delta_encoder_output # "concat_fwd_delta_bwd_delta/concat_sources/concat"
                 )
             else:
                 fsTfConfig.input_map.info_2.param_name = "deltaEncoder-output"
                 fsTfConfig.input_map.info_2.tensor_name = (
-                    "concat_fwd_delta_bwd_delta/concat_sources/concat"
+                    self.tensor_mapping.encoder_output # "concat_fwd_delta_bwd_delta/concat_sources/concat"
                 )
 
         self.featureScorerConfig = fsTfConfig

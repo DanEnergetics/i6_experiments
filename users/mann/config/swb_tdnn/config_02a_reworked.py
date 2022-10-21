@@ -63,6 +63,10 @@ from recipe.i6_experiments.users.mann.setups.tdps import CombinedModel
 tdp_model = CombinedModel.from_fwd_probs(3/8, 1/60, 0.0)
 swb_system.prior_system.lemma_end_probability = 1/4
 
+recog_prior = copy.deepcopy(swb_system.prior_system)
+recog_prior.eps = 1e-8
+recog_prior.extract_prior()
+
 exp_config = ExpConfig(
     # compile_crnn_config=swb_system.baselines["viterbi_lstm"](),
     training_args={
@@ -76,7 +80,9 @@ exp_config = ExpConfig(
         "normalize_lemma_sequence_scores": False,
     },
     epochs=[12, 24, 48, 120, 240, 300, 320],
-    scorer_args={"prior_mixtures": None},
+    scorer_args={
+        "prior_mixtures": None,
+        "prior_file": recog_prior.prior_xml_file, },
     reestimate_prior="transcription",
     dump_epochs=[4, 8, 12],
 )
