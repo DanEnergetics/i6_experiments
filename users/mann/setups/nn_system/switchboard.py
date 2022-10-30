@@ -77,6 +77,7 @@ PREFIX_PATH_asr4                  = "/work/asr4/michel/setups-data/SWB_sis/"
 default_allophones_file      = PREFIX_PATH + "allophones/StoreAllophones.wNiR4cF7cdOE/output/allophones"
 default_alignment_file       = Path('/work/asr3/michel/setups-data/SWB_sis/mm/alignment/AlignmentJob.j3oDeQH1UNjp/output/alignment.cache.bundle', cached=True)
 extra_alignment_file         = Path('/work/asr4/michel/setups-data/SWB_sis/mm/alignment/AlignmentJob.BF7Xi6M0bF2X/output/alignment.cache.bundle', cached=True) # gmm
+tuske_alignment_file = Path('/work/asr2/zeyer/setups-data/switchboard/2016-01-28--crnn/tuske__2016_01_28__align.combined.train', cached=True)
 default_alignment_logs = ['/work/asr3/michel/setups-data/SWB_sis/' + \
     'mm/alignment/AlignmentJob.j3oDeQH1UNjp/output/alignment.log.{id}.gz' \
         .format(id=id) for id in range(1, 201)]
@@ -194,6 +195,8 @@ def get_legacy_switchboard_system(binaries: BinarySetup=BinarySetup.Download):
         )
         system.feature_bundles[c]['gt'] = tk.Path(default_feature_paths[c], cached=True)
     system.alignments['train']['init_align'] = default_alignment_file
+    system.alignments['train']['init_gmm'] = extra_alignment_file
+    system.alignments['train']['tuske'] = tuske_alignment_file
     system.mixtures['train']['init_mixture'] = default_mixture_path
     system._init_am()
 

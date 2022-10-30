@@ -1,3 +1,4 @@
+from sisyphus import tk
 from sisyphus.delayed_ops import DelayedFormat
 
 import copy
@@ -164,14 +165,15 @@ class RasrTrainer(BaseTrainer):
             dataset["estimated_num_seqs"] = estimated_num_seqs
         return dataset
     
-    def make_rasr_dataset(self, name, corpus, feature_flow, **kwargs):
+    def make_rasr_dataset(self, name, dataset_name, corpus, feature_flow, **kwargs):
         from i6_core.returnn import ReturnnRasrTrainingJob
         from i6_experiments.users.mann.experimental.write import WriteFlowNetworkJob
         feature_flow = self.system.feature_flows[corpus][feature_flow]
         feature_flow = ReturnnRasrTrainingJob.create_flow(feature_flow=feature_flow, **kwargs)
         write_feature_flow = WriteFlowNetworkJob(flow=feature_flow)
         rasr_config_file = self.write_rasr_train_config(self.system.crp[corpus], write_feature_flow.out_network_file, **kwargs)
-        return self.get_rasr_dataset_config(self.system.crp[corpus], name, rasr_config_file, **kwargs)
+        tk.register_output(f"nn_configs/{name}/rasr.{dataset_name}.config", rasr_config_file)
+        return self.get_rasr_dataset_config(self.system.crp[corpus], dataset_name, rasr_config_file, **kwargs)
 
     def train(self, name, partition_epochs, returnn_config, feature_corpus, train_corpus, dev_corpus, num_classes=None, **kwargs):
         num_classes = self.system.functor_value(num_classes)
@@ -182,6 +184,7 @@ class RasrTrainer(BaseTrainer):
             returnn_config.config["num_outputs"]["classes"] = [self.system.functor_value(num_classes), 1]
         for key, corpus in zip(["train", "dev"], [train_corpus, dev_corpus]):
             returnn_config.config[key] = self.make_rasr_dataset(
+                name,
                 key,
                 corpus,
                 partition_epochs=partition_epochs[key],
