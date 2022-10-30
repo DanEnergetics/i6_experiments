@@ -126,11 +126,11 @@ class FactoredHybridDecoder:
 
         # get tf graph
         compile_args = ChainMap(dict(adjust_output_layer=False), compile_args)
-        print(recog_name, compile_crnn_config)
         if isinstance(compile_crnn_config, str):
-            compile_graph = system.jobs[train_corpus]["compile_returnn_{}".format(compile_crnn_config)].out_graph
+            # compile_graph = system.jobs[train_corpus]["compile_returnn_{}".format(compile_crnn_config)].out_graph
+            compile_graph, _ = system.compile_graph[train_corpus][compile_crnn_config]
         else:
-            compile_graph = system.compile_model(
+            compile_graph, _ = system.compile_model(
                 returnn_config = compile_crnn_config,
                 alias = recog_name or name,
                 **compile_args,
@@ -194,4 +194,3 @@ class FactoredHybridDecoder:
             optimize=optimize,
             _adjust_train_args=False,
         )
-
