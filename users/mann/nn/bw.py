@@ -128,13 +128,15 @@ class ScaleConfig(returnn.ReturnnConfig):
             )
         self.maybe_add_dependency("import numpy as np")
     
-    def set_rasr_config(self, config, post_config, inplace=False):
+    def set_rasr_config(self, config, post_config, inplace=False, save_under=None):
         assert isinstance(config, RasrConfig) and isinstance(post_config, RasrConfig)
         if inplace:
             new_config = self
         else:
             new_config = copy.deepcopy(self)
         config_file = WriteRasrConfigJob(config, post_config).out_config
+        if save_under:
+            tk.register_output(f"nn_configs/{save_under}/fastbw.config", config_file)
         config_str = delayed_ops.DelayedFormat("--config={}", config_file)
         new_config.config["network"]["fast_bw"]["sprint_opts"]["sprintConfigStr"] = config_str
         return new_config
