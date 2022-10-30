@@ -314,7 +314,7 @@ class CombinedModel:
     
     def to_acoustic_model_extra_config(self):
         config = rasr.RasrConfig() 
-        self.transition_model.apply_to_am_config(config)
+        self.transition_model.to_weights().apply_to_am_config(config)
         config.tdp.silence.exit = self.silence_exit
         config.tdp["*"].skip = self.speech_skip
         config.tdp["*"].exit = 0.0
@@ -335,6 +335,7 @@ class CombinedModel:
         config.tdp["entry-m1"].loop = "infinity"
         config.tdp["entry-m2"].loop = "infinity"
         self.transition_model.to_weights().apply_to_am_config(config)
+
         if self.skip_normed and self.speech_skip is not None:
             fwd = config.tdp["*"].forward
             config.tdp["*"].forward = fwd * (1 - self.speech_skip)
