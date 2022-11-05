@@ -1024,7 +1024,11 @@ class BaseSystem(RasrSystem):
 			try:
 				alignment = alignment.alternatives["bundle"]
 			except AttributeError:
+				pass
+			try:
 				alignment = alignment.value
+			except AttributeError:
+				pass
 		if alignment_logs is None:
 			alignment_logs = (
 				alignment
@@ -1037,7 +1041,6 @@ class BaseSystem(RasrSystem):
 		tk.register_output("stats_align/scores/{}.png".format(name), alignment_scores.out_plot_avg)
 		args = (
 			alignment,
-			# self.csp["train"].acoustic_model_config.allophones.add_from_file,
 			self.get_allophone_file(),
 			self.csp["train"].segment_path.hidden_paths,
 			self.csp["train"].concurrent

@@ -129,6 +129,13 @@ default_viterbi_config = ExpConfig(
 
 lbs_system.set_trainer(HdfAlignTrainer(lbs_system))
 
+
+lbs_system.init_dump_system(segments=[])
+lbs_system.dump_system.init_score_segments()
+
+wers = {}
+scores = {}
+
 lbs_system.nn_and_recog(
     name="viterbi_lstm.base",
     crnn_config=baseline_viterbi, 
@@ -144,10 +151,23 @@ lbs_system.nn_and_recog(
     epochs=[80, 160],
     # alt_training=True,
 )
+wers["base"] = lbs_system.get_wer("viterbi_lstm.base", 160)
+
+lbs_system.dump_system.score(
+    name="viterbi_lstm.base",
+    epoch=160,
+    returnn_config=baseline_viterbi,
+    training_args={
+        "num_classes": lbs_system.num_classes(),
+        "alignment": ("train", "baseline_ffnn", -1),
+    }
+)
+scores["base"] = lbs_system.dump_system.scores["viterbi_lstm.base"]["dev_score"]
 
 for key, align in hdf_align.items():
+    name="viterbi_lstm.{}".format(key)
     lbs_system.nn_and_recog(
-        name="viterbi_lstm.{}".format(key),
+        name=name,
         crnn_config=baseline_viterbi, 
         training_args={
             "hdf_alignment": align,
@@ -158,7 +178,41 @@ for key, align in hdf_align.items():
         epochs=[80, 160],
         alt_training=True,
     )
+    lbs_system.dump_system.score(
+        name=name,
+        epoch=160,
+        returnn_config=baseline_viterbi,
+        training_args={
+            "hdf_alignment": align,
+            "alignment": None,
+            "num_classes": lbs_system.num_classes(),
+        },
+        alt_training=True,
+    )
+    wers[key] = lbs_system.get_wer(name, 160)
+    scores[key] = lbs_system.dump_system.scores[name]["dev_score"]
 
+from collections import OrderedDict
+
+key_map = OrderedDict([
+    ("base", "None"),
+    ("shift-10", "Shift by 10 frames"),
+    ("shift-20", "Shift by 20 frames"),
+    ("roll-silence", "Move silence to end"),
+])
+
+def dump_summary(wers, scores):
+    from pylatex import Tabular
+    tab = Tabular("l|r|r")
+    tab.add_hline()
+    tab.add_row(("Align. Trafo", "WER [%]", "Score"))
+    tab.add_hline()
+    for key, value in key_map.items():
+        tab.add_row((value, wers[key].get(), "{:.2f}".format(scores[key].get())))
+    tab.add_hline()
+    print(tab.dumps())
+
+tk.register_callback(dump_summary, wers, scores)
 
 #------------------------------------- clean up models --------------------------------------------
 

@@ -38,3 +38,15 @@ FULL_LABEL_BUILDER = TdpModelBuilder(
 LABEL_MODEL_BUILDER = {
     "label": FULL_LABEL_BUILDER,
 }
+
+class ReducedDependencyModelBuilder(TdpModelBuilder):
+    def get_
+
+    def build(self, num_classes, init_tdps=None, system=None, **kwargs):
+        assert system is not None
+        self.system = system
+        return BaseTdpModel(
+            tdp_layer=self.tdp_layer_func(num_classes),
+            output_layer=self.output_layer_func(num_classes),
+            init_tdps=init_tdps
+        )

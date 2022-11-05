@@ -65,6 +65,9 @@ TDP_SCALES = [0.1, 0.2, 0.3, 0.5, 0.7, 1.0]
 TDP_REDUCED = [0.1, 0.5, 1.0]
 PRIOR_SCALES = [0.1, 0.3, 0.5, 0.7]
 
+from i6_experiments.users.mann.experimental.tuning import RecognitionTuner
+tuner = RecognitionTuner(swb_system)
+
 #---------------------------------- tinas baseline ------------------------------------------------
 
 from i6_experiments.users.mann.nn.config import TINA_UPDATES_1K, TINA_NETWORK_CONFIG, TINA_UPDATES_SWB
@@ -199,6 +202,13 @@ for tdp, prior in itertools.product(TDP_SCALES, PRIOR_SCALES):
         ), 
         optimize=False,
     )
+
+tuner.tune(
+    name='baseline_tina.no_tying-tune_scales-tdp_{}-prior_{}'.format(tdp, prior),
+    crnn_config=builder.build(),
+    recognition_config=RecognitionConfig(lm_scale=3.0, tdps=CombinedModel.legacy()),
+    exp_config=exp_config,
+)
 
 tdp, prior = 0.2, 0.7
 swb_system.run_exp(
