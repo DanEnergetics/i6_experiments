@@ -7,6 +7,7 @@ from i6_core.util import instanciate_delayed
 from . import helpers
 from .helpers import TuningSystem
 from i6_experiments.users.mann.setups.nn_system import RecognitionConfig
+from i6_experiments.users.mann.setups.reports import maybe_get
 from i6_experiments.users.mann.setups.nn_system.base_system import NotSpecified
 
 import os
@@ -231,7 +232,7 @@ class RecognitionTuner:
     def all_scales(self):
         return itertools.product(self.tdp_scales, self.prior_scales)
     
-    def print_report(self, name, epoch, data):
+    def print_report(self, name, data):
         table_data = []
         sorted_priors = sorted(self.prior_scales)
         for tdp in sorted(self.tdp_scales):
@@ -286,53 +287,12 @@ class RecognitionTuner:
             epoch=epoch,
             recog_name=recog_name,
             optimize=optimize,
-            recognition_args=recognition_config.to_dict(),
+            recognition_args=recognition_config.to_dict(prefix="tune_recog/" if quick else ""),
             crnn_config=returnn_config,
             exp_config=exp_config,
             **kwargs,
         )
         return recog_name
-
-    # def tune(
-    #     self,
-    #     name,
-    #     returnn_config,
-    #     epoch,
-    #     recognition_config,
-    #     exp_config,
-    #     prior_suffix=None,
-    #     print_report=False,
-    # ):
-    #     prior = False
-    #     if exp_config.reestimate_prior == "CRNN":
-    #         exp_config = exp_config.replace(
-    #             reestimate_prior=False
-    #         ).extend(
-    #             scorer_args={"prior_file": name}
-    #         )
-    #     data = {}
-    #     for tdp, prior in itertools.product(self.tdp_scales, self.prior_scales):
-    #         tuning_config = recognition_config.replace(
-    #             tdp_scale=tdp,
-    #             prior_scale=prior,
-    #             beam_pruning=self.base_config.beam_pruning,
-    #             altas=self.base_config.altas,
-    #         )
-    #         recog_name="{}.tune_recog.tdp-{}.prior-{}".format(name, tdp, prior)
-    #         self.system.run_decode(
-    #             name,
-    #             epoch=epoch,
-    #             recog_name=recog_name,
-    #             # crnn_config=returnn_config,
-    #             optimize=False,
-    #             recognition_args=tuning_config.to_dict(),
-    #             crnn_config=returnn_config,
-    #             exp_config=exp_config,
-    #         )
-    #         data[(tdp, prior)] = self.system.get_wer(recog_name, epoch, optlm=False, precise=True, prior=prior_suffix)
-        
-    #     if print_report:
-    #         self.print_report(name, epoch, data)
 
     async def tune(
         self,
@@ -371,7 +331,7 @@ class RecognitionTuner:
             data[mscale] = self.system.get_wer(recog_name, epoch, optlm=False, precise=True, prior=prior_suffix)
         
         if print_report:
-            self.print_report(name, epoch, data)
+            self.print_report(name, data)
         
         if not optimum:
             return
@@ -456,6 +416,7 @@ class RecognitionTuner:
             returnn_config=returnn_config,
             exp_config=exp_config,
             params=optimum,
+            extra_suffix=extra_suffix,
         )
         return self.system.get_wer(recog_name, epoch, optlm=True, precise=False, prior=prior_suffix)
 
@@ -471,10 +432,11 @@ class RecognitionTuner:
         extra_suffix="",
         prior_suffix=None,
         print_report=False,
+        force_existing_prior=False,
     ):
         prior = False
         decoding_args = copy.deepcopy(decoding_args)
-        if exp_config.reestimate_prior == "CRNN":
+        if exp_config.reestimate_prior == "CRNN" and force_existing_prior:
             exp_config = exp_config.replace(
                 reestimate_prior=False
             ).extend(
@@ -496,7 +458,7 @@ class RecognitionTuner:
             data[mscale] = self.system.get_wer(recog_name, epoch, optlm=False, precise=True, prior=prior_suffix)
         
         if print_report:
-            self.print_report(name, epoch, data)
+            self.print_report(name + extra_suffix, data)
         
         if not optimum:
             return
@@ -522,6 +484,7 @@ class RecognitionTuner:
             returnn_config=returnn_config,
             exp_config=exp_config,
             params=optimum,
+            extra_suffix=extra_suffix,
         )
 
 
@@ -562,7 +525,7 @@ class FactoredHybridTuner(RecognitionTuner):
             )
             optimize = False
             recog_name="{}{}.tune_recog.fwd_loop-{}.tdp-{}.prior-{}".format(name, extra_suffix, fwd_loop, tdp, prior)
-        decoding_args["prior_info"]["center-state-prior"]["scale"] = prior
+        # decoding_args["prior_info"]["center-state-prior"]["scale"] = prior
         self.system.run_decode(
             name,
             epoch=epoch,
@@ -570,17 +533,35 @@ class FactoredHybridTuner(RecognitionTuner):
             type="fh",
             optimize=optimize,
             decoding_args=decoding_args,
-            recognition_args=recognition_config.to_dict(),
+            recognition_args=recognition_config.to_dict(prefix="tune_recog/" if quick else ""),
             crnn_config=returnn_config,
             exp_config=exp_config.extend(
                 scorer_args={
                     "forward_scale": fwd_loop,
                     "loop_scale": fwd_loop,
+                    "prior_scale": prior,
                 }
             ),
+            clean=True,
             **kwargs,
         )
         return recog_name
+    
+    def print_report(self, name, data):
+        def make_table():
+            lines = []
+            table = []
+            for tdp, prior, fwd_loop in self.all_scales:
+                table.append([tdp, prior, fwd_loop, maybe_get(data[(tdp, prior, fwd_loop)])])
+            lines.append(tabulate(table, headers=["tdp", "prior", "fwd_loop", "WER"], tablefmt="presto"))
+            lines.append("")
+            lines.append("Optimum found at: {}".format(maybe_get(self.calc_optimum(data))))
+            return "\n".join(lines)
+        
+        tk.register_report(
+            os.path.join(self.output_dir, "summary", name + "_tuning.txt"),
+            make_table,
+        )
     
     async def tune_async(
         self,
@@ -589,15 +570,20 @@ class FactoredHybridTuner(RecognitionTuner):
         recognition_config,
         decoding_args,
         exp_config,
-        optimum=None,
+        optimum="async",
         returnn_config=None,
         extra_suffix="",
         prior_suffix=None,
         print_report=False,
+        force_existing_prior=False,
+        flf_tool_exe=None,
     ):
+        if flf_tool_exe is not None:
+            self.system.crp["dev"] = copy.deepcopy(self.system.crp["dev"])
+            self.system.crp["dev"].flf_tool_exe = flf_tool_exe
         prior = False
         decoding_args = copy.deepcopy(decoding_args)
-        if exp_config.reestimate_prior == "CRNN":
+        if exp_config.reestimate_prior == "CRNN" and force_existing_prior:
             exp_config = exp_config.replace(
                 reestimate_prior=False
             ).extend(
@@ -619,7 +605,7 @@ class FactoredHybridTuner(RecognitionTuner):
             data[mscale] = self.system.get_wer(recog_name, epoch, optlm=False, precise=True, prior=prior_suffix)
         
         if print_report:
-            self.print_report(name, epoch, data)
+            self.print_report(name + extra_suffix + "-{}".format(epoch), data)
         
         if not optimum:
             return

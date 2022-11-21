@@ -108,8 +108,8 @@ class RecognitionConfig(AbstractConfig):
 	def replace(self, **kwargs):
 		return dataclasses.replace(self, **kwargs)
 
-	def to_dict(self) -> dict:
-		out_dict = {}
+	def to_dict(self, **extra_args) -> dict:
+		out_dict = extra_args.copy()
 		extra_config_keys = ["am_scale", "tdp_scale", "prior_scale"]
 		if any(getattr(self, key) is not NotSpecified for key in extra_config_keys):
 			rasr_am_key = "flf-lattice-tool.network.recognizer.acoustic-model."
@@ -227,6 +227,9 @@ class BaseSystem(RasrSystem):
 		self.decoders = {
 			"default": self,
 		}
+
+		from ..clean import LatticeCleaner
+		self.lattice_cleaner = LatticeCleaner()
 	
 	def add_overlay(self, origin, name):
 		super().add_overlay(origin, name)
@@ -251,7 +254,7 @@ class BaseSystem(RasrSystem):
 	def get_state_tying(self):
 		return self.csp['base'].acoustic_model_config.state_tying.type
 	
-	def set_state_tying(self, value, cart_file: Optional[tk.Path] = None, extra_args={}, **kwargs):
+	def set_state_tying(self, value, cart_file: Optional[tk.Path] = None, extra_args={}, hmm_partition=3, **kwargs):
 		assert value in {'monophone', 'cart', 'monophone-no-tying-dense', 'lut', 'lookup'}, "No other state tying types supported yet"
 		if value == 'cart': assert cart_file is not None, "Cart file must be specified"
 		for crp in self.crp.values():
@@ -259,6 +262,8 @@ class BaseSystem(RasrSystem):
 			crp.acoustic_model_config.state_tying.file = cart_file
 			for k, v in {**extra_args, **kwargs}.items():
 				crp.acoustic_model_config.state_tying[k] = v
+			if hmm_partition != 3:
+				crp.acoustic_model_config.hmm.states_per_phone = hmm_partition
 		
 	def num_classes(self):
 		if self.get_state_tying() in self._num_classes_dict:
@@ -308,6 +313,9 @@ class BaseSystem(RasrSystem):
 			return scorer_job.out_wer
 		assert precise is True
 		return scorer_job.out_num_errors / scorer_job.out_ref_words * 100
+	
+	def get_last_wer(self, name, **kwargs):
+		pass
 
 	def set_initial_system(self, corpus='train', feature=None, alignment=None, 
 												prior_mixture=None, cart=None, allophones=None, 
@@ -835,11 +843,18 @@ class BaseSystem(RasrSystem):
 					self.decode(_adjust_train_args=False, **kwargs)
 					continue
 	
-	def extract_prior(self, name, crnn_config, training_args, epoch):
+	def extract_prior(self, name, crnn_config, training_args, epoch, bw=False):
 		# alignment = None
 		# if score_args.pop("use_alignment", True):
 		alignment = select_element(self.alignments, training_args["feature_corpus"], training_args["alignment"])
 		num_classes  = self.functor_value(training_args["num_classes"])
+		if bw:
+			assert "fast_bw" in crnn_config.config["network"]
+			crnn_config = copy.deepcopy(crnn_config)
+			crnn_config.config["network"]["bw_prior"] = {
+				"class": "eval", "from": "fast_bw", "eval": "source(0) + eps", "eval_locals": {"eps": 1e-10}
+			}
+			crnn_config.config["forward_output_layer"] = "bw_prior"
 		score_features = crnn.ReturnnRasrComputePriorJob(
 			train_crp = self.csp[training_args['train_corpus']],
 			dev_crp = self.csp[training_args['dev_corpus']],
@@ -865,6 +880,8 @@ class BaseSystem(RasrSystem):
 			compile_crnn_config=None,
 			reestimate_prior=False,
 			optimize=True,
+			clean=False,
+			_feature_scorer=None,
 			_adjust_train_args=True,
 			**_ignored
 		):
@@ -883,17 +900,19 @@ class BaseSystem(RasrSystem):
 
 		score_args = dict(**self.default_scorer_args)
 		score_args.update(scorer_args)
-		if reestimate_prior == "alt":
+		if isinstance(reestimate_prior, str) and reestimate_prior.startswith("alt"):
 			extract_prior = self.trainer.extract_prior
 		else:
 			extract_prior = self.extract_prior
-		if reestimate_prior in {'CRNN', 'alt'}:
+		if reestimate_prior in {'CRNN', 'alt', "bw", "alt-bw"}:
 			self.jobs[training_args["feature_corpus"]]["returnn_compute_prior_%s" % scorer_name] \
-				= score_features = extract_prior(name, crnn_config, training_args, epoch)
+				= score_features = extract_prior(name, crnn_config, training_args, epoch, bw=reestimate_prior.endswith("bw"))
 			self.nn_priors[training_args["feature_corpus"]][name][epoch] = score_features.out_prior_xml_file
 			scorer_name += '-prior'
 			score_args['name'] = scorer_name
 			score_args['prior_file'] = score_features.out_prior_xml_file
+		elif reestimate_prior == 'bw':
+			pass
 		elif reestimate_prior == 'transcription':
 			score_args['prior_file'] = self.prior_system.prior_xml_file
 		elif reestimate_prior == True:
@@ -937,28 +956,45 @@ class BaseSystem(RasrSystem):
 		else:
 			from i6_core.mm import CreateDummyMixturesJob
 			prior_mixtures = CreateDummyMixturesJob(self.num_classes(), self.num_input).out_mixtures
-		if 'feature_scorer' not in recog_args:
-			recog_args['feature_scorer'] = scorer = sprint.PrecomputedHybridFeatureScorer(
+		if _feature_scorer is not None:
+			assert callable(_feature_scorer)
+			recog_args['feature_scorer'] = scorer = _feature_scorer(
 				prior_mixtures=prior_mixtures,
 				priori_scale=score_args.get('prior_scale', 0.),
-				# prior_file=score_features.prior if reestimate_prior else None,
 				prior_file=select_element(self.nn_priors, training_args['feature_corpus'], score_args.get("prior_file", None), epoch),
 				scale=score_args.get('mixture_scale', 1.0),
 			)
 		else:
-			scorer = recog_args['feature_scorer']
+			if 'feature_scorer' not in recog_args:
+				recog_args['feature_scorer'] = scorer = sprint.PrecomputedHybridFeatureScorer(
+					prior_mixtures=prior_mixtures,
+					priori_scale=score_args.get('prior_scale', 0.),
+					# prior_file=score_features.prior if reestimate_prior else None,
+					prior_file=select_element(self.nn_priors, training_args['feature_corpus'], score_args.get("prior_file", None), epoch),
+					scale=score_args.get('mixture_scale', 1.0),
+				)
+			else:
+				scorer = recog_args['feature_scorer']
 		self.feature_scorers[training_args['feature_corpus']][scorer_name] = scorer
 
 		extra_rqmts = recog_args.pop('extra_rqmts', {})
 		# reset tdps for recognition
 		with tk.block('recog-V%d' % epoch):
+			js = []
 			if optimize:
 				self.recog_and_optimize(**recog_args)
-				self.jobs[recog_args["corpus"]]['recog_%s' % recog_args["name"] + "-optlm"].rqmt.update(extra_rqmts)
+				opt_recog_job = self.jobs[recog_args["corpus"]]['recog_%s' % recog_args["name"] + "-optlm"]
+				opt_recog_job.rqmt.update(extra_rqmts)
+				js.append(opt_recog_job)
 			else:
 				self.recog(**recog_args)
-			self.jobs[recog_args["corpus"]]['recog_%s' % recog_args["name"]].rqmt.update(extra_rqmts)
-
+			recog_job = self.jobs[recog_args["corpus"]]['recog_%s' % recog_args["name"]]
+			recog_job.rqmt.update(extra_rqmts)
+			js.append(recog_job)
+		
+		if clean:
+			for j in js:
+				self.lattice_cleaner.clean(j, self.get_wer(name, epoch))
 
 	def nn_align(
 		self, nn_name, crnn_config, epoch, scorer_suffix='', mem_rqmt=8,
@@ -1417,10 +1453,10 @@ class NNSystem(BaseSystem):
 		from .. import dump
 		self.dump_system = dump.HdfDumpster(self, segments, default_dump_args)
 	
-	def clean(self, training_name, epochs, cleaner_args=None):
+	def clean(self, training_name, epochs, cleaner_args=None, feature_corpus="train"):
 		from i6_core.returnn import WriteReturnnConfigJob
 		from i6_experiments.users.mann.experimental.cleaner import ReturnnCleanupOldModelsJob, ReturnnCleanerConfig
-		training_job = self.jobs["train"]["train_nn_%s" % training_name]
+		training_job = self.jobs[feature_corpus]["train_nn_%s" % training_name]
 
 		cleaner_args = cleaner_args or {}
 		cleaner_args.setdefault("returnn_root", self.cleaner_returnn_root)

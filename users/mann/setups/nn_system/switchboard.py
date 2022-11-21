@@ -274,6 +274,9 @@ def init_extended_train_corpus(system, reinit_shuffle=True):
     system.crp["train_magic"].corpus_config.file = merged_corpus
 
     if reinit_shuffle:
+        chunk_size = 300
+        if isinstance(reinit_shuffle, int):
+            chunk_size = reinit_shuffle
         init_segment_order_shuffle(system, "returnn_train_magic", 300)
     
     from i6_experiments.users.mann.setups.nn_system.trainer import RasrTrainer

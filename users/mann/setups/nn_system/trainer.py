@@ -27,8 +27,16 @@ class BaseTrainer:
         self.system.nn_checkpoints[feature_corpus][name] = job.out_checkpoints
         self.system.nn_configs[feature_corpus][name] = job.out_returnn_config_file
 
-    def extract_prior(self, name, crnn_config, training_args, epoch):
+    def extract_prior(self, name, crnn_config, training_args, epoch, bw=False):
         crnn_config = self.configs[name]
+        if bw:
+            assert "fast_bw" in crnn_config.config["network"]
+            crnn_config = copy.deepcopy(crnn_config)
+            crnn_config.config["network"]["bw_prior"] = {
+                "class": "eval", "from": "fast_bw", "eval": "source(0) + eps", "eval_locals": {"eps": 1e-10},
+                "is_output_layer": True
+            }
+            crnn_config.config["forward_output_layer"] = "bw_prior"
         score_features = ReturnnComputePriorJob(
             model_checkpoint=self.system.nn_checkpoints[training_args["feature_corpus"]][name][epoch],
             returnn_config=crnn_config,
@@ -63,10 +71,19 @@ class BaseTrainer:
     def train_helper(
             self,
             returnn_config,
-            log_verbosity=3, device='gpu',
-            num_epochs=1, save_interval=1, keep_epochs=None,
-            time_rqmt=4, mem_rqmt=4, cpu_rqmt=2,
-            returnn_python_exe=None, returnn_root=None,
+            *,
+            log_verbosity=3,
+            device="gpu",
+            num_epochs=1,
+            save_interval=1,
+            keep_epochs=None,
+            time_rqmt=4,
+            mem_rqmt=4,
+            cpu_rqmt=2,
+            horovod_num_processes=None,
+            multi_node_slots=None,
+            returnn_python_exe=None,
+            returnn_root=None,
             **_ignored
         ):
             kwargs = locals()
@@ -187,7 +204,7 @@ class RasrTrainer(BaseTrainer):
                 name,
                 key,
                 corpus,
-                partition_epochs=partition_epochs[key],
+                partition_epochs=partition_epochs.get(key, 1),
                 **kwargs,
             )
         # training_args.maps.insert(0, data)

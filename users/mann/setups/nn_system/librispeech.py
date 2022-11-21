@@ -11,6 +11,8 @@ from i6_experiments.users.mann.setups import prior
 from recipe.i6_core import features
 from i6_core import rasr
 
+from .common import init_segment_order_shuffle
+
 from recipe.i6_experiments.common.setups.rasr.util import RasrDataInput
 
 SCTK_PATH = Path('/u/beck/programs/sctk-2.4.0/bin/')
@@ -30,6 +32,12 @@ default_alignment_file = Path(PREFIX_PATH + "AlignmentJob.Mg44tFDRPnuh/output/al
 default_tf_native_ops = Path('/work/tools/asr/returnn_native_ops/20190919_0e23bcd20/generic/NativeLstm2/NativeLstm2.so')
 default_mixture_path = Path(PREFIX_PATH + "EstimateMixturesJob.accumulate.dctnjFBP8hos/output/am.mix", cached=True)
 default_mono_mixture_path = Path("/u/michel/setups/librispeech/work/mm/mixtures/EstimateMixturesJob.accumulate.rNKsxWShoABt/output/am.mix", cached=True)
+
+ext_cv_setup = {
+    "features": "/work/asr4/raissi/setups/librispeech/960-ls/dependencies/data/zhou-corpora/FeatureExtraction.Gammatone.yly3ZlDOfaUm/output/gt.cache.bundle",
+    "corpus_file": "/work/asr4/raissi/setups/librispeech/960-ls/dependencies/data/zhou-corpora/dev-cv.corpus.xml",
+    "segment_path": "/work/asr4/raissi/setups/librispeech/960-ls/dependencies/data/zhou-corpora/dev-cv.segments"
+}
 
 init_nn_args = {
     'name': 'crnn',
@@ -258,8 +266,57 @@ def custom_recog_tdps():
     )
     return recog_extra_config
 
-def init_segment_order_shuffle(system, chunk_size=1000):
-    system.csp["crnn_train"] = copy.deepcopy(system.csp["crnn_train"])
-    system.csp["crnn_train"].corpus_config.segment_order_shuffle = True
-    system.csp["crnn_train"].corpus_config.segment_order_sort_by_time_length = True
-    system.csp["crnn_train"].corpus_config.segment_order_sort_by_time_length_chunk_size = chunk_size
+# def init_segment_order_shuffle(system, chunk_size=1000):
+#     system.csp["crnn_train"] = copy.deepcopy(system.csp["crnn_train"])
+#     system.csp["crnn_train"].corpus_config.segment_order_shuffle = True
+#     system.csp["crnn_train"].corpus_config.segment_order_sort_by_time_length = True
+#     system.csp["crnn_train"].corpus_config.segment_order_sort_by_time_length_chunk_size = chunk_size
+
+def init_extended_train_corpus(system, reinit_shuffle=True):
+    overlay_name = "train_magic"
+    system.add_overlay("train", overlay_name)
+
+    from recipe.i6_core import features
+    from recipe.i6_core import corpus
+
+    # cv_feature_bundle = "/work/asr4/raissi/ms-thesis-setups/lm-sa-swb/dependencies/cv-from-hub5-00/features/gammatones/FeatureExtraction.Gammatone.pp9W8m2Z8mHU/output/gt.cache.bundle"
+    overlay_name = "returnn_train_magic"
+    system.add_overlay("train_magic", overlay_name)
+    system.crp[overlay_name].concurrent = 1
+    system.crp[overlay_name].corpus_config = corpus_config = system.crp[overlay_name].corpus_config._copy()
+    system.crp[overlay_name].segment_path = corpus.SegmentCorpusJob(corpus_config.file, num_segments=1).out_single_segment_files[1]
+
+    overlay_name = "returnn_cv_magic"
+    system.add_overlay("dev", overlay_name)
+    system.crp[overlay_name].concurrent = 1
+    system.crp[overlay_name].segment_path = ext_cv_setup["segment_path"]
+    system.crp[overlay_name].corpus_config = corpus_config = system.crp[overlay_name].corpus_config._copy()
+    system.crp[overlay_name].corpus_config.file = ext_cv_setup["corpus_file"]
+    system.crp[overlay_name].acoustic_model_config = system.crp[overlay_name].acoustic_model_config._copy()
+    del system.crp[overlay_name].acoustic_model_config.tdp
+    system.feature_bundles[overlay_name]["gt"] = tk.Path(ext_cv_setup["features"], cached=True)
+    system.feature_flows[overlay_name]["gt"] = flow = features.basic_cache_flow(tk.Path(ext_cv_setup["features"], cached=True))
+
+    merged_corpus = corpus.MergeCorporaJob(
+        [system.crp[f"returnn_{k}_magic"].corpus_config.file for k in ["train", "cv"]],
+        name="librispeech",
+        merge_strategy=corpus.MergeStrategy.FLAT,
+    ).out_merged_corpus
+    system.crp["train_magic"].corpus_config = corpus_config = system.crp["train_magic"].corpus_config._copy()
+    system.crp["train_magic"].corpus_config.file = merged_corpus
+
+    if reinit_shuffle:
+        chunk_size = 300
+        if isinstance(reinit_shuffle, int):
+            chunk_size = reinit_shuffle
+        init_segment_order_shuffle(system, "returnn_train_magic", 300)
+    
+    from i6_experiments.users.mann.setups.nn_system.trainer import RasrTrainer
+    system.set_trainer(RasrTrainer())
+
+    return {
+        "feature_corpus": "train_magic",
+        "train_corpus": "returnn_train_magic",
+        "dev_corpus": "returnn_cv_magic",
+    }
+

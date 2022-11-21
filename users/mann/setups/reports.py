@@ -1,4 +1,31 @@
+from sisyphus.job_path import VariableNotSet
+from sisyphus.delayed_ops import DelayedBase
 
+def maybe_get(var):
+    try:
+        return var.get()
+    except VariableNotSet:
+        return ""
+
+def eval_tree(o, f=maybe_get, condition=lambda x: isinstance(x, DelayedBase)):
+    """
+    Recursively traverses a structure and calls .get() on all
+    existing Delayed Operations, especially Variables in the structure
+
+    :param Any o: nested structure that may contain DelayedBase objects
+    :return:
+    """
+    if condition(o):
+        o = f(o)
+    elif isinstance(o, list):
+        for k in range(len(o)):
+            o[k] = eval_tree(o[k], f, condition)
+    elif isinstance(o, tuple):
+        o = tuple(eval_tree(e, f, condition) for e in o)
+    elif isinstance(o, dict):
+        for k in o:
+            o[k] = eval_tree(o[k], f, condition)
+    return o
 
 class SimpleValueReport:
     def __init__(self, value):

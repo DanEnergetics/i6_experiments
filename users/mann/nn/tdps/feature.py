@@ -1,4 +1,5 @@
-from .base import BaseTdpModel, Arch, TdpModelBuilder
+from .base import BaseTdpModel, TdpModelBuilder
+from ..util import DelayedCodeWrapper
 
 TDP_FFNN_LAYER = lambda num_classes: {
     "class": "subnetwork",
@@ -156,6 +157,61 @@ def TDP_BLSTM_LAYER_SIGMOID(num_classes, n_out=512):
         }
     }
 
+#--------------------------------------- initializer ----------------------------------------------
+
+def get_simple_tdps(num_classes, silence_idx, speech_fwd, silence_fwd, as_logit=False):
+    import numpy as np
+    tdp_array = np.full((num_classes,), speech_fwd)
+    tdp_array[silence_idx] = silence_fwd
+    if as_logit:
+        tdp_array = np.log(tdp_array / (1 - tdp_array))
+    return tdp_array
+
+class FeatureInitializer:
+
+    def __init__(self, n_classes, init, init_args):
+        self.n_classes = n_classes
+        self.init = init
+        self.init_args = init_args
+    
+    def build_tdp_code(self, num_classes, silence_idx, speech_fwd, silence_fwd, as_logit=True):
+        fmt_string = "{}({}, {}, {}, {})"
+        if as_logit:
+            fmt_string = "{}({}, {}, {}, {}, as_logit=True)"
+        return DelayedCodeWrapper(
+            fmt_string,
+            get_simple_tdps.__name__,
+            num_classes, silence_idx, speech_fwd, silence_fwd, 
+        )
+
+    def set_layer(self, layer, value):
+        layer["subnetwork"]["fwd_prob"].update({
+            "bias_init": value,
+            "forward_weights_init": 0,
+        })
+        return None
+    
+    def set_smart_init(self, layer, silence_idx, speech_fwd, silence_fwd, **_ignored):
+        code = self.build_tdp_code(self.n_classes, silence_idx, speech_fwd, silence_fwd)
+        self.set_layer(layer, code)
+        return get_simple_tdps
+    
+    def apply(self, layer, config):
+        init = self.init
+        init_args = self.init_args
+        assert init in {"flat", "smart", "random"}, "Unknown init method: {}".format(init)
+        if init == "smart":
+            assert all(key in init_args for key in {"speech_fwd", "silence_fwd", "silence_idx"})
+        else:
+            init_args = {}
+        extra_imports = {
+            "flat": lambda: self.set_layer(layer, 0),
+            "smart": lambda: self.set_smart_init(layer, **init_args),
+            "random": lambda: None,
+        }[init]()
+        config.maybe_add_dependencies(extra_imports)
+        
+
 TDP_BLSTM_LAYER_SIGMOID_SMALL = lambda num_classes: TDP_BLSTM_LAYER_SIGMOID(num_classes, n_out=1)
 
 FEATURE_ARCHS = {
@@ -166,7 +222,7 @@ FEATURE_ARCHS = {
     "blstm_large": TDP_BLSTM_LAYER_SIGMOID,
 }
 
-def get_tdp_layer(num_classes, arch: Arch="ffnn"):
+def get_tdp_layer(num_classes, arch="ffnn"):
     return FEATURE_ARCHS[arch](num_classes)
 
 
@@ -194,7 +250,11 @@ FEATURE_MODEL_BUILDERS = {
     'blstm_no_label_sigmoid': TdpModelBuilder(TPD_BLSTM_NO_LABEL_SIGMOID_LAYER, TDP_OUTPUT_LAYER_AS_FUNC),
     'blstm': TdpModelBuilder(TDP_BLSTM_LAYER_SIGMOID_SMALL, TDP_OUTPUT_LAYER_AS_FUNC),
     'blstm_no_label': TdpModelBuilder(TDP_BLSTM_NO_LABEL_LAYER_SMALL, TDP_OUTPUT_LAYER_AS_FUNC),
-    'blstm_large': TdpModelBuilder(TDP_BLSTM_LAYER_SIGMOID, TDP_OUTPUT_LAYER_AS_FUNC),
+    'blstm_large': TdpModelBuilder(
+        TDP_BLSTM_LAYER_SIGMOID,
+        TDP_OUTPUT_LAYER_AS_FUNC,
+        initializer=FeatureInitializer,
+    ),
     'blstm_no_label_large': TdpModelBuilder(TDP_BLSTM_NO_LABEL_LAYER, TDP_OUTPUT_LAYER_AS_FUNC),
 }
 
