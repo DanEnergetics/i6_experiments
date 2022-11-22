@@ -880,7 +880,7 @@ class BaseSystem(RasrSystem):
 			compile_crnn_config=None,
 			reestimate_prior=False,
 			optimize=True,
-			clean=False,
+			clean=True,
 			_feature_scorer=None,
 			_adjust_train_args=True,
 			**_ignored

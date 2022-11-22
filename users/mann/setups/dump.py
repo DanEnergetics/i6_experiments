@@ -107,8 +107,9 @@ class HdfDumpster:
             self.system.crp[overlay_name].segment_path = new_segments.out_segments[key]
 
     def instantiate_fast_bw_layer(self, returnn_config, fast_bw_args):
+        fast_bw_args = fast_bw_args.copy()
         fastbw_config, fastbw_post_config \
-            = add_fastbw_configs(self.system.csp['train'], **fast_bw_args) # TODO: corpus dependent and training args
+            = add_fastbw_configs(self.system.csp[fast_bw_args.pop("corpus", "train")], **fast_bw_args) # TODO: corpus dependent and training args
         write_job = WriteRasrConfigJob(fastbw_config["fastbw"], fastbw_post_config["fastbw"])
         config_path = write_job.out_config
         try:
@@ -132,6 +133,8 @@ class HdfDumpster:
 
     def forward(self, name, returnn_config, epoch, hdf_outputs=["fast_bw"], training_args={}, fast_bw_args={}, **kwargs):
         args = ChainMap(kwargs, training_args, self.system.default_nn_training_args)        
+        if returnn_config is None:
+            returnn_config = self.system.nn_config_dicts["train"][name]
         args = args.new_child({
             "partition_epochs": args["partition_epochs"]["dev"],
             "corpus": "returnn_dump"
