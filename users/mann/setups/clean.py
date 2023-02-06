@@ -2,17 +2,19 @@ from sisyphus import tk, gs
 
 import os
 
-def clean(lattice_caches, mark_func, **_ignored):
-    for cache in lattice_caches.values():
-        print("Cleaning cache: {}".format(cache))
+def clean(lattice_caches, mark_func, wer, **_ignored):
+    # print("Finished score job: %s" % wer.creator)
+    print("Cleaning lattice caches of %s: " % lattice_caches[1].creator, end="")
+    for number, cache in lattice_caches.items():
         try:
             os.remove(cache.get_path())
+            print(number, end="..")
         except FileNotFoundError:
             pass
+    print("done")
     mark_func()
     
 class LatticeCleaner:
-
     def __init__(self, output_subdir=gs.ALIAS_AND_OUTPUT_SUBDIR):
         self.output_subdir = output_subdir
         self._save_file = os.path.join("output", self.output_subdir, "cleaned_lattices.txt")
@@ -23,8 +25,8 @@ class LatticeCleaner:
             with open(self._save_file) as f:
                 return set(f.read().splitlines())
         except FileNotFoundError:
-            with open(self._save_file, "w") as f:
-                pass
+            # with open(self._save_file, "w") as f:
+            #     pass
             return set()
 
     def is_cleaned(self, job):

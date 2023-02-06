@@ -33,6 +33,11 @@ default_tf_native_ops = Path('/work/tools/asr/returnn_native_ops/20190919_0e23bc
 default_mixture_path = Path(PREFIX_PATH + "EstimateMixturesJob.accumulate.dctnjFBP8hos/output/am.mix", cached=True)
 default_mono_mixture_path = Path("/u/michel/setups/librispeech/work/mm/mixtures/EstimateMixturesJob.accumulate.rNKsxWShoABt/output/am.mix", cached=True)
 
+lbs1k_default_alignment_file = Path(
+    "/work/asr3/michel/mann/misc/tmp/dependencies/lbs/960/gmm-alignment/alignment.cache.bundle",
+    cached=True
+)
+
 ext_cv_setup = {
     "features": "/work/asr4/raissi/setups/librispeech/960-ls/dependencies/data/zhou-corpora/FeatureExtraction.Gammatone.yly3ZlDOfaUm/output/gt.cache.bundle",
     "corpus_file": "/work/asr4/raissi/setups/librispeech/960-ls/dependencies/data/zhou-corpora/dev-cv.corpus.xml",
@@ -183,7 +188,12 @@ def get_legacy_librispeech_system():
     lbs_system.feature_flows["dev"][feature_flow] = features.basic_cache_flow(Path(default_feature_paths["dev-clean"] + "bundle", cached=True))
     lbs_system.alignments["train"]["init_align"] = default_alignment_file
     lbs_system._init_am()
-    del lbs_system.crp["train"].acoustic_model_config.tdp
+    # del lbs_system.crp["train"].acoustic_model_config.tdp
+    system = lbs_system
+    system.crp["train"].acoustic_model_config = system.crp["base"].acoustic_model_config._copy()
+    system.crp["train"].acoustic_model_config.state_tying = system.crp["base"].acoustic_model_config.state_tying
+    del system.crp['train'].acoustic_model_config.tdp
+
     lbs_system.default_nn_training_args = default_nn_training_args
     lbs_system.default_recognition_args = default_recognition_args
     lbs_system.default_scorer_args      = default_scorer_args
@@ -231,11 +241,16 @@ def get_libri_1k_system():
 
     # attach training and recognition args
     lbs_system._init_am()
-    del lbs_system.crp["train"].acoustic_model_config.tdp
+    # del lbs_system.crp["train"].acoustic_model_config.tdp
+    system = lbs_system
+    system.crp["train"].acoustic_model_config = system.crp["base"].acoustic_model_config._copy()
+    system.crp["train"].acoustic_model_config.state_tying = system.crp["base"].acoustic_model_config.state_tying
+    del system.crp['train'].acoustic_model_config.tdp
     lbs_system.default_nn_training_args = default_1k_nn_training_args.copy()
     lbs_system.default_recognition_args = default_recognition_args.copy()
     lbs_system.default_scorer_args      = default_scorer_args
     lbs_system.default_reduced_segment_path = default_reduced_segment_path
+    lbs_system.alignments["train"]["init_align"] = lbs1k_default_alignment_file
 
     # init scorer
     lbs_system.create_stm_from_corpus("dev")

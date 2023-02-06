@@ -525,7 +525,6 @@ class FactoredHybridTuner(RecognitionTuner):
             )
             optimize = False
             recog_name="{}{}.tune_recog.fwd_loop-{}.tdp-{}.prior-{}".format(name, extra_suffix, fwd_loop, tdp, prior)
-        # decoding_args["prior_info"]["center-state-prior"]["scale"] = prior
         self.system.run_decode(
             name,
             epoch=epoch,
@@ -535,10 +534,10 @@ class FactoredHybridTuner(RecognitionTuner):
             decoding_args=decoding_args,
             recognition_args=recognition_config.to_dict(prefix="tune_recog/" if quick else ""),
             crnn_config=returnn_config,
+            extra_suffix="",
             exp_config=exp_config.extend(
                 scorer_args={
-                    "forward_scale": fwd_loop,
-                    "loop_scale": fwd_loop,
+                    "fwd_loop_scale": fwd_loop,
                     "prior_scale": prior,
                 }
             ),

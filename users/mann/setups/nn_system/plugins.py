@@ -29,7 +29,7 @@ class FilterAlignmentPlugin:
         )
         return filtered_segments.single_segment_files[1]
     
-    def apply(self, training_args, alignment=None, **_ignored):
+    def apply(self, training_args, alignment=None, alignment_logs=None, **_ignored):
         import i6_experiments.users.mann.experimental.extractors as extr
         import i6_core.corpus as corpus_recipes
         dev_size = self.dev_size
@@ -39,15 +39,16 @@ class FilterAlignmentPlugin:
         ).out_single_segment_files
         if alignment is None:
             alignment = training_args["alignment"]
-        alignment_logs = (
-            select_element(
-                self.system.alignments,
-                self.DEFAULT_FEATURE_CORPUS,
-                alignment)
-                .alternatives["bundle"]
-                .creator
-                .out_log_file
-        )
+        if alignment_logs is None:
+            alignment_logs = (
+                select_element(
+                    self.system.alignments,
+                    self.DEFAULT_FEATURE_CORPUS,
+                    alignment)
+                    .alternatives["bundle"]
+                    .creator
+                    .out_log_file
+            )
         # filtered_segments = extr.FilterSegmentsByAlignmentFailures(
         #     {1: all_segments.single_segment_files[1]},
         #     alignment_logs

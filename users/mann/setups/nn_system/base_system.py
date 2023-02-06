@@ -104,23 +104,32 @@ class RecognitionConfig(AbstractConfig):
 	beam_pruning : float = NotSpecified
 	beam_pruning_threshold : Union[int, float] = NotSpecified
 	altas : Optional[float] = NotSpecified
+	extra_args : Optional[dict] = dataclasses.field(default_factory=dict)
+	extra_config : Optional[rasr.RasrConfig] = NotSpecified
 
 	def replace(self, **kwargs):
 		return dataclasses.replace(self, **kwargs)
 
-	def to_dict(self, **extra_args) -> dict:
-		out_dict = extra_args.copy()
+	def to_dict(self, _full_tdp_config=False, **extra_args) -> dict:
+		out_dict = {**extra_args, **self.extra_args}
 		extra_config_keys = ["am_scale", "tdp_scale", "prior_scale"]
+		if self.extra_config is not NotSpecified:
+			extra_rasr_config = out_dict.get("extra_config", rasr.RasrConfig())
+			extra_rasr_config._update(self.extra_config)
+			out_dict["extra_config"] = extra_rasr_config
 		if any(getattr(self, key) is not NotSpecified for key in extra_config_keys):
 			rasr_am_key = "flf-lattice-tool.network.recognizer.acoustic-model."
-			extra_rasr_config = rasr.RasrConfig()
+			extra_rasr_config = out_dict.get("extra_config", rasr.RasrConfig())
 			for key in extra_config_keys:
 				if getattr(self, key) is not NotSpecified:
 					extra_rasr_config[rasr_am_key + RASR_SCALE_MAP[key]] = getattr(self, key)
 			out_dict["extra_config"] = extra_rasr_config
 		if self.tdps is not NotSpecified:
 			extra_rasr_config = out_dict.get("extra_config", rasr.RasrConfig())
-			extra_rasr_config["flf-lattice-tool.network.recognizer.acoustic-model"] = self.tdps.to_acoustic_model_extra_config()
+			if _full_tdp_config:
+				extra_rasr_config["flf-lattice-tool.network.recognizer.acoustic-model"] = self.tdps.to_acoustic_model_config()
+			else:
+				extra_rasr_config["flf-lattice-tool.network.recognizer.acoustic-model"] = self.tdps.to_acoustic_model_extra_config()
 			out_dict["extra_config"] = extra_rasr_config
 		if self.altas is not NotSpecified:
 			extra_rasr_config = out_dict.get("extra_config", rasr.RasrConfig())
@@ -132,7 +141,7 @@ class RecognitionConfig(AbstractConfig):
 		if self.beam_pruning is not NotSpecified:
 			out_dict["search_parameters"]["beam-pruning"] = self.beam_pruning
 		if self.beam_pruning_threshold is not NotSpecified:
-			out_dict["search_parameters"]["beam-pruning-threshold"] = self.beam_pruning_threshold
+			out_dict["search_parameters"]["beam-pruning-limit"] = self.beam_pruning_threshold
 		return out_dict
 		
 
@@ -149,6 +158,7 @@ class ExpConfig(AbstractConfig):
 	reestimate_prior: str = None
 	dump_epochs: list = None
 	alt_training: bool = False
+	alt_decoding: Union[bool, dict] = NotSpecified
 	compile_args: dict = None
 
 	def extend(self, **extensions):
@@ -297,8 +307,10 @@ class BaseSystem(RasrSystem):
 		self.trainer = trainer
 		self.trainer.set_system(self, **kwargs)
 	
-	def _get_scorer(self, name, epoch, optlm=None, prior=None):
+	def _get_scorer(self, name, epoch, extra_suffix=None, optlm=None, prior=None):
 		name = "scorer_crnn-{}-{}".format(name, epoch)
+		if extra_suffix is not None:
+			name += extra_suffix
 		if prior is None:
 			prior = name + "-prior" in self.jobs["dev"]
 		if prior: name += "-prior"
@@ -316,6 +328,14 @@ class BaseSystem(RasrSystem):
 	
 	def get_last_wer(self, name, **kwargs):
 		pass
+
+	def init_report_system(self, fname):
+		# import
+		from ..reports import ReportSystem
+		self.report_system = ReportSystem(fname)
+	
+	def report(self, name, data):
+		self.report_system.print(name, data)
 
 	def set_initial_system(self, corpus='train', feature=None, alignment=None, 
 												prior_mixture=None, cart=None, allophones=None, 
@@ -743,7 +763,6 @@ class BaseSystem(RasrSystem):
 			tk.register_output('plot_se_%s.png' % name, train_job.plot_se)
 			tk.register_output('plot_lr_%s.png' % name, train_job.plot_lr)
 
-
 	def nn_dump(self, name, training_args, crnn_config, checkpoint, debug_config=False, reduced_segments=None, extra_dumps=None, dumps=Default):
 		crnn_config = copy.deepcopy(crnn_config)
 		if dumps is Default:
@@ -794,14 +813,16 @@ class BaseSystem(RasrSystem):
 		j.add_alias('nn_%s' % alias)
 		tk.register_output('dump_nn_{}_learning_rates'.format(name), j.learning_rates)
 
-
 	def nn_and_recog(
 		self, name, training_args, crnn_config, scorer_args,  
-		recognition_args, epochs=None, reestimate_prior='CRNN', compile_args=None,
-		optimize=True, use_tf_flow=False, label_sync_decoding=False, 
-	#  delayed_build=False,
+		recognition_args,
+		epochs=None,
+		reestimate_prior='CRNN',
+		compile_args=None,
+		optimize=True, use_tf_flow=False,
 		alt_training=False, dump_epochs=None,
-		compile_crnn_config=None, alt_decoding=NotSpecified
+		compile_crnn_config=None,
+		alt_decoding=NotSpecified
 	):
 		if compile_args is None:
 			compile_args = {}
@@ -830,22 +851,32 @@ class BaseSystem(RasrSystem):
 
 			tk.register_output("nn_configs/{}/returnn.config".format(name), train_job.out_returnn_config_file)
 
+			# default decoding procedure
 			for epoch in epochs:
 				kwargs = locals().copy()
-				del kwargs["self"], kwargs["label_sync_decoding"]
+				del kwargs["self"]
 				kwargs["training_args"] = kwargs.pop("train_args")
-				if alt_decoding is not NotSpecified:
-					kwargs["decoding_args"] = kwargs.pop("alt_decoding")
-					self.decoder.decode(**kwargs)
-					continue
-				else:
-					assert use_tf_flow, "Otherwise not supported"
-					self.decode(_adjust_train_args=False, **kwargs)
-					continue
+				assert use_tf_flow, "Otherwise not supported"
+				self.decode(_adjust_train_args=False, **kwargs)
+
+			# alternative decoding procedure
+			if alt_decoding is NotSpecified:
+				return
+			if isinstance(alt_decoding, bool):
+				alt_decoding = {}
+			alt_decoding_epochs = alt_decoding.pop("epochs", epochs)
+			for epoch in alt_decoding_epochs:
+				kwargs = locals().copy()
+				del kwargs["self"], kwargs["alt_decoding_epochs"]
+				kwargs["training_args"] = kwargs.pop("train_args")
+				kwargs["decoding_args"] = kwargs.pop("alt_decoding")
+				self.decoder.decode(**kwargs)
 	
 	def extract_prior(self, name, crnn_config, training_args, epoch, bw=False):
 		# alignment = None
 		# if score_args.pop("use_alignment", True):
+		if crnn_config is None:
+			crnn_config = self.nn_config_dicts["train"][name]
 		alignment = select_element(self.alignments, training_args["feature_corpus"], training_args["alignment"])
 		num_classes  = self.functor_value(training_args["num_classes"])
 		if bw:
@@ -879,6 +910,7 @@ class BaseSystem(RasrSystem):
 			compile_args=None,
 			compile_crnn_config=None,
 			reestimate_prior=False,
+			prior_config=None,
 			optimize=True,
 			clean=True,
 			_feature_scorer=None,
@@ -889,14 +921,18 @@ class BaseSystem(RasrSystem):
 			if compile_args is None:
 				compile_args = {}
 			training_args = {**self.default_nn_training_args, **training_args}
-	
+		
 		scorer_name = name + ('-%d' % epoch)
 		if recog_name is None:
 			recog_name = scorer_name
 		else:
 			recog_name += "-" + str(epoch)
 		if extra_suffix is not None:
-			recog_name = "-".join([recog_name, extra_suffix])
+			# recog_name = "-".join([recog_name, extra_suffix])
+			recog_name = recog_name + extra_suffix
+
+		if ".tuned" in recog_name:
+			print(recognition_args["search_parameters"])
 
 		score_args = dict(**self.default_scorer_args)
 		score_args.update(scorer_args)
@@ -904,9 +940,9 @@ class BaseSystem(RasrSystem):
 			extract_prior = self.trainer.extract_prior
 		else:
 			extract_prior = self.extract_prior
-		if reestimate_prior in {'CRNN', 'alt', "bw", "alt-bw"}:
+		if reestimate_prior in {'CRNN', 'alt', "bw", "alt-bw", "alt-CRNN"}:
 			self.jobs[training_args["feature_corpus"]]["returnn_compute_prior_%s" % scorer_name] \
-				= score_features = extract_prior(name, crnn_config, training_args, epoch, bw=reestimate_prior.endswith("bw"))
+				= score_features = extract_prior(name, prior_config or crnn_config, training_args, epoch, bw=reestimate_prior.endswith("bw"))
 			self.nn_priors[training_args["feature_corpus"]][name][epoch] = score_features.out_prior_xml_file
 			scorer_name += '-prior'
 			score_args['name'] = scorer_name
@@ -922,10 +958,17 @@ class BaseSystem(RasrSystem):
 		# copy feature flow used in training
 		# recog_args['flow'] = training_args['feature_flow']
 		if 'search_parameters' in recognition_args:
+			# if ".tuned" in recog_name:
+			# 	print(recognition_args["search_parameters"])
 			recog_args['search_parameters'].update(recognition_args['search_parameters'])
+			# if ".tuned" in recog_name:
+			# 	print(recog_args["search_parameters"])
 			remaining_args = copy.copy(recognition_args)
 			del remaining_args['search_parameters']
+			assert "search_parameters" not in remaining_args, "search_parameters should not be in remaining args"
 			recog_args.update(remaining_args)
+			# if ".tuned" in recog_name:
+			# 	print(recog_args["search_parameters"])
 		else:
 			recog_args.update(recognition_args)
 		recog_args['name']           = 'crnn-%s%s' % (recog_name, '-prior' if reestimate_prior else '')
@@ -959,6 +1002,7 @@ class BaseSystem(RasrSystem):
 		if _feature_scorer is not None:
 			assert callable(_feature_scorer)
 			recog_args['feature_scorer'] = scorer = _feature_scorer(
+				name=recog_name,
 				prior_mixtures=prior_mixtures,
 				priori_scale=score_args.get('prior_scale', 0.),
 				prior_file=select_element(self.nn_priors, training_args['feature_corpus'], score_args.get("prior_file", None), epoch),
@@ -981,42 +1025,50 @@ class BaseSystem(RasrSystem):
 		# reset tdps for recognition
 		with tk.block('recog-V%d' % epoch):
 			js = []
+			wer = None
 			if optimize:
+
+				if ".tuned" in recog_name:
+					print(recog_args["search_parameters"])
 				self.recog_and_optimize(**recog_args)
 				opt_recog_job = self.jobs[recog_args["corpus"]]['recog_%s' % recog_args["name"] + "-optlm"]
 				opt_recog_job.rqmt.update(extra_rqmts)
+				wer_job = self.jobs[recog_args["corpus"]]['scorer_%s' % recog_args["name"] + "-optlm"]
 				js.append(opt_recog_job)
 			else:
 				self.recog(**recog_args)
+				wer_job = self.jobs[recog_args["corpus"]]['scorer_%s' % recog_args["name"]]
 			recog_job = self.jobs[recog_args["corpus"]]['recog_%s' % recog_args["name"]]
 			recog_job.rqmt.update(extra_rqmts)
 			js.append(recog_job)
 		
 		if clean:
+			assert wer_job
 			for j in js:
-				self.lattice_cleaner.clean(j, self.get_wer(name, epoch))
+				self.lattice_cleaner.clean(j, wer_job.out_wer)
 
 	def nn_align(
 		self, nn_name, crnn_config, epoch, scorer_suffix='', mem_rqmt=8,
 		compile_crnn_config=None, name=None, feature_flow='gt', dump=False,
-		graph=None, time_rqmt=4,
+		graph=None, time_rqmt=4, flow=None, feature_corpus="train",
 		compile_args=None, evaluate=False, feature_scorer=None, **kwargs
 	):
 		# get custom tf
-		compile_args = compile_args or {}
-		if compile_crnn_config is None:
-			compile_crnn_config = crnn_config
-		feature_flow_net = meta.system.select_element(self.feature_flows, 'train', feature_flow)
-		model = self.jobs['train']['train_nn_%s' % nn_name].out_models[epoch]
-		if graph is not None:
-			graph = self.compile_graphs['train'][graph]
-		flow = self.get_tf_flow(
-			feature_flow_net,
-			compile_crnn_config,
-			model,
-			graph=graph,
-			**compile_args
-		)
+		if flow is None:
+			compile_args = compile_args or {}
+			if compile_crnn_config is None:
+				compile_crnn_config = crnn_config
+			feature_flow_net = meta.system.select_element(self.feature_flows, 'train', feature_flow)
+			model = self.jobs[feature_corpus]['train_nn_%s' % nn_name].out_models[epoch]
+			if graph is not None:
+				graph = self.compile_graphs['train'][graph]
+			flow = self.get_tf_flow(
+				feature_flow_net,
+				compile_crnn_config,
+				model,
+				graph=graph,
+				**compile_args
+			)
 
 		# get alignment
 		model_name = '%s-%s' % (nn_name, epoch)
@@ -1024,9 +1076,10 @@ class BaseSystem(RasrSystem):
 		alignment_name = 'alignment_%s' % name
 		feature_scorer = model_name + scorer_suffix if feature_scorer is None else feature_scorer
 		self.align(
-			name=name if not name else name, corpus='train', 
+			name=name if not name else name,
+			corpus='train', 
 			flow=flow,
-			feature_scorer=meta.select_element(self.feature_scorers, 'train', feature_scorer),
+			feature_scorer=meta.select_element(self.feature_scorers, feature_corpus, feature_scorer),
 			**kwargs,
 		)
 		j = self.jobs['train'][alignment_name]
@@ -1046,6 +1099,7 @@ class BaseSystem(RasrSystem):
   
 	def evaluate_alignment(self, name, corpus, alignment=None, alignment_logs=None):
 		from i6_core.corpus import FilterSegmentsByAlignmentConfidenceJob
+		from i6_experiments.users.mann.experimental.statistics.alignment import ComputeTseJob
 		from i6_experiments.users.mann.experimental.statistics import (
 			SilenceAtSegmentBoundaries,
 			AlignmentStatisticsJob
@@ -1085,7 +1139,18 @@ class BaseSystem(RasrSystem):
 		asj.add_alias(f"alignment_stats-{name}")
 		stats = asj.counts
 		tk.register_output("stats_align/counts/{}".format(name), stats)
-		return stats
+
+		# compute TSE
+		try:
+			tse = ComputeTseJob(
+				alignment,
+				self.alignments["train"]["init_align"],
+				lbs_system.get_allophone_file()
+			)
+			tse.add_alias(f"tse-{name}")
+			tk.register_output("stats_align/tse/{}".format(name), tse.out_tse)
+		except:
+			return stats
 
 	def run(self, steps='all'):
 		if steps == 'all':
@@ -1192,6 +1257,7 @@ class ConfigBuilder:
 		self.encoder = None
 		self.prior = "povey"
 		self.transforms = []
+		self.updates = {}
 
 	def set_ffnn(self):
 		self.encoder = viterbi_ffnn
@@ -1265,6 +1331,9 @@ class ConfigBuilder:
 		self.transforms.append(specaugment.set_config)
 		return self
 	
+	def update(self, **kwargs):
+		self.updates.update(kwargs)
+	
 	def build(self):
 		from i6_experiments.users.mann.nn import BASE_BW_LRS
 		from i6_experiments.users.mann.nn import prior, pretrain, bw, get_learning_rates
@@ -1288,6 +1357,8 @@ class ConfigBuilder:
 
 		for transform in self.transforms:
 			transform(bw_config)
+		
+		# bw_config.config.update(self.updates)
 		
 		return bw_config
 
@@ -1453,7 +1524,7 @@ class NNSystem(BaseSystem):
 		from .. import dump
 		self.dump_system = dump.HdfDumpster(self, segments, default_dump_args)
 	
-	def clean(self, training_name, epochs, cleaner_args=None, feature_corpus="train"):
+	def clean(self, training_name, epochs, exec_immediately=False, cleaner_args=None, feature_corpus="train"):
 		from i6_core.returnn import WriteReturnnConfigJob
 		from i6_experiments.users.mann.experimental.cleaner import ReturnnCleanupOldModelsJob, ReturnnCleanerConfig
 		training_job = self.jobs[feature_corpus]["train_nn_%s" % training_name]
@@ -1463,10 +1534,14 @@ class NNSystem(BaseSystem):
 
 		cleaner_config = ReturnnCleanerConfig.from_epochs(epochs)
 
+		model=training_job.out_model_dir.join_right("epoch")
+		if exec_immediately:
+			model._available = lambda *args, **kwargs: True 
+		print("Path available: ", model.creator.path_available(model))
 		j = ReturnnCleanupOldModelsJob(
 			cleaner_config,
-			scores=training_job.out_learning_rates,
-			model=training_job.out_model_dir.join_right("epoch"),
+			scores=training_job.out_learning_rates if not exec_immediately else None,
+			model=model,
 			**cleaner_args,
 		)
 		j.set_vis_name("Clean {}".format(training_name))
@@ -1513,7 +1588,7 @@ class NNSystem(BaseSystem):
 			fast_bw_args={},
 			alt_training=False,
 			dump_epochs=None, dump_args=None,
-			label_sync_decoding=False, **kwargs):
+			**kwargs):
 		# experimental
 		if epochs is None:
 			epochs = self.default_epochs
@@ -1552,8 +1627,10 @@ class NNSystem(BaseSystem):
 		with safe_crp(self) as tcsp:
 			for plugin, args in plugin_args.items():
 				self.plugins[plugin].apply(**args, **config_args)
-			if any(layer['class'] == 'fast_bw' for layer in crnn_config.config['network'].values()) \
-				and 'additional_rasr_config_files' not in training_args:
+			if (
+				isinstance(crnn_config, bw.ScaleConfig)
+				or any(layer['class'] == 'fast_bw' for layer in crnn_config.config['network'].values())
+				) and 'additional_rasr_config_files' not in training_args:
 				additional_sprint_config_files, additional_sprint_post_config_files \
 					= add_fastbw_configs(self.csp[fast_bw_args.pop("corpus", "train")], **fast_bw_args) # TODO: corpus dependent and training args
 				if alt_training:
@@ -1581,7 +1658,7 @@ class NNSystem(BaseSystem):
 				name, training_args, crnn_config, scorer_args, recognition_args, epochs=epochs, 
 				reestimate_prior=reestimate_prior, optimize=optimize, use_tf_flow=use_tf_flow, compile_args=compile_args,
 				compile_crnn_config=compile_crnn_config, alt_training=alt_training,
-				label_sync_decoding=label_sync_decoding, **kwargs)
+				**kwargs)
 
 			if dump_epochs is None:
 				return j

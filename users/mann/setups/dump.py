@@ -96,6 +96,7 @@ class HdfDumpster:
 
     def init_score_segments(self):
         self.scores = {}
+        self.lr_files = {}
         from i6_core.corpus import ShuffleAndSplitSegmentsJob
         new_segments = ShuffleAndSplitSegmentsJob(
             segment_file=self.system.crp["crnn_train"].segment_path,
@@ -124,7 +125,11 @@ class HdfDumpster:
         new_returnn_config.config["eval"] = dataset
         network = new_returnn_config.config["network"]
         for output in hdf_outputs:
-            assert output in network, "Layer {} is not in the network".format(output)
+            if "/" in output:
+                parent_layer, sub_layer = output.split("/")
+                assert parent_layer in network and sub_layer in network[parent_layer]["subnetwork"]
+            else:
+                assert output in network, "Layer {} is not in the network".format(output)
             network["dump_{}".format(output)] = {
                 "class": "hdf_dump", "filename": "{}.hdf".format(output),
                 "is_output_layer": True, "from": output
@@ -136,7 +141,7 @@ class HdfDumpster:
         if returnn_config is None:
             returnn_config = self.system.nn_config_dicts["train"][name]
         args = args.new_child({
-            "partition_epochs": args["partition_epochs"]["dev"],
+            "partition_epochs": args["partition_epochs"].get("dev", 1),
             "corpus": "returnn_dump"
         })
         dataset = BaseTrainer(self.system).make_sprint_dataset("forward", **args)
@@ -154,13 +159,14 @@ class HdfDumpster:
         out = {name.rstrip(".hdf"): file for name, file in forward_job.out_hdf_files.items()}
         return out
     
-    def score(self, name, returnn_config, epoch, training_args={}, fast_bw_args={}, **kwargs):
+    def score(self, name, returnn_config, epoch, extra_name=None, training_args={}, fast_bw_args={}, **kwargs):
         score_config = copy.deepcopy(self.system.nn_config_dicts["train"][name])
         if returnn_config is not None:
             score_config = copy.deepcopy(returnn_config)
         score_config.config["learning_rate"] = 0
         del score_config.config["learning_rates"]
-        preload.set_preload(self.system, score_config, (name, epoch))
+        feature_corpus = training_args.get("feature_corpus", "train")
+        preload.set_preload(self.system, score_config, (feature_corpus, name, epoch))
 
         extra_training_args = {
             "train_corpus": "returnn_score_train",
@@ -169,7 +175,7 @@ class HdfDumpster:
             "time_rqmt": 1,
         }
 
-        scoring_name = "-".join((name, "score"))
+        scoring_name = "-".join((extra_name or name, "score"))
         self.system.nn_and_recog(
             name=scoring_name,
             crnn_config=score_config,
@@ -179,8 +185,9 @@ class HdfDumpster:
             **kwargs
         )
 
-        score_job = self.system.jobs["train"]["train_nn_" + scoring_name]
+        score_job = self.system.jobs[feature_corpus]["train_nn_" + scoring_name]
 
+        self.lr_files[name] = score_job.out_learning_rates
         self.scores[name] = DelayedLearningRates(score_job.out_learning_rates)[1]["error"]
 
     

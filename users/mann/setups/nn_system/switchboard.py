@@ -55,7 +55,7 @@ default_recognition_args = {
         'word-end-pruning-limit': 10000},
     'lattice_to_ctm_kwargs' : { 'fill_empty_segments' : True,
                                 'best_path_algo': 'bellman-ford' },
-    'rtf': 50
+    'rtf': 50,
 }
 
 default_cart_lda_args = {

@@ -28,7 +28,13 @@ class BaseTrainer:
         self.system.nn_configs[feature_corpus][name] = job.out_returnn_config_file
 
     def extract_prior(self, name, crnn_config, training_args, epoch, bw=False):
-        crnn_config = self.configs[name]
+        if crnn_config is None:
+            crnn_config = self.configs[name]
+        else:
+            train_config = self.configs[name]
+            crnn_config = copy.deepcopy(crnn_config)
+            crnn_config.config["train"] = train_config.config["train"]
+            crnn_config.config["dev"] = train_config.config["dev"]
         if bw:
             assert "fast_bw" in crnn_config.config["network"]
             crnn_config = copy.deepcopy(crnn_config)
@@ -182,13 +188,17 @@ class RasrTrainer(BaseTrainer):
             dataset["estimated_num_seqs"] = estimated_num_seqs
         return dataset
     
-    def make_rasr_dataset(self, name, dataset_name, corpus, feature_flow, **kwargs):
+    def make_rasr_dataset(self, name, dataset_name, corpus, feature_flow, alignment, **kwargs):
         from i6_core.returnn import ReturnnRasrTrainingJob
         from i6_experiments.users.mann.experimental.write import WriteFlowNetworkJob
+        alignment=select_element(self.system.alignments, corpus, alignment)
         feature_flow = self.system.feature_flows[corpus][feature_flow]
-        feature_flow = ReturnnRasrTrainingJob.create_flow(feature_flow=feature_flow, **kwargs)
+        feature_flow = ReturnnRasrTrainingJob.create_flow(feature_flow=feature_flow, alignment=alignment, **kwargs)
         write_feature_flow = WriteFlowNetworkJob(flow=feature_flow)
-        rasr_config_file = self.write_rasr_train_config(self.system.crp[corpus], write_feature_flow.out_network_file, **kwargs)
+        rasr_config_file = self.write_rasr_train_config(
+            self.system.crp[corpus], write_feature_flow.out_network_file,
+            alignment=alignment,
+            **kwargs)
         tk.register_output(f"nn_configs/{name}/rasr.{dataset_name}.config", rasr_config_file)
         return self.get_rasr_dataset_config(self.system.crp[corpus], dataset_name, rasr_config_file, **kwargs)
 

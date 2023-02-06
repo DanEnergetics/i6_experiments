@@ -287,7 +287,7 @@ class CombinedModel:
     to_buggy_weights.
     In the future, this class will likely be deprecated.
     """
-    def __init__(self, transition_model, silence_exit, speech_skip=None, skip_normed=True):
+    def __init__(self, transition_model, silence_exit, speech_skip=None, skip_normed=False):
         self.transition_model = transition_model
         self.silence_exit = silence_exit
         self.speech_skip = speech_skip
@@ -299,13 +299,18 @@ class CombinedModel:
         return cls(transition_model, silence_exit, speech_skip=speech_skip)
     
     @classmethod
-    def zeros(cls, silence_exit=0.0):
+    def zeros(cls, silence_exit=0.0, speech_skip=None):
         transition_model = SimpleTransitionModel.from_weights([0.0, 0.0], [0.0, 0.0])
-        return cls(transition_model, silence_exit)
+        return cls(transition_model, silence_exit, speech_skip=speech_skip)
     
     @classmethod
     def legacy(cls):
         return cls.from_weights(0.0, 3.0, 3.0, 0.0, 20.0, 30.0)
+    
+    def adjust(self, **kwargs):
+        assert all(key in self.__dict__ for key in kwargs)
+        self.__dict__.update(kwargs)
+        return self
     
     @classmethod
     def from_weights(cls, speech_fwd, speech_loop, silence_fwd, silence_loop, silence_exit, speech_skip=None, skip_normed=False):

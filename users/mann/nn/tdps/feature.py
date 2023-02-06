@@ -246,7 +246,7 @@ TDP_OUTPUT_LAYER_W_SOFTMAX = {
 from functools import partial
 
 FEATURE_MODEL_BUILDERS = {
-    'ffnn': TdpModelBuilder(TDP_FFNN_LAYER, TDP_OUTPUT_LAYER_AS_FUNC),
+    'ffnn': TdpModelBuilder(TDP_FFNN_LAYER, TDP_OUTPUT_LAYER_AS_FUNC, initializer=FeatureInitializer),
     'blstm_no_label_sigmoid': TdpModelBuilder(TPD_BLSTM_NO_LABEL_SIGMOID_LAYER, TDP_OUTPUT_LAYER_AS_FUNC),
     'blstm': TdpModelBuilder(TDP_BLSTM_LAYER_SIGMOID_SMALL, TDP_OUTPUT_LAYER_AS_FUNC),
     'blstm_no_label': TdpModelBuilder(TDP_BLSTM_NO_LABEL_LAYER_SMALL, TDP_OUTPUT_LAYER_AS_FUNC),

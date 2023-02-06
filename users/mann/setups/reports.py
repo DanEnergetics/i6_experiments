@@ -1,5 +1,9 @@
+from sisyphus import tk
 from sisyphus.job_path import VariableNotSet
 from sisyphus.delayed_ops import DelayedBase
+
+import os
+import tabulate as tab
 
 def maybe_get(var):
     try:
@@ -43,6 +47,26 @@ class DescValueReport:
         max_width = max(len(key) for key in keys)
         fmt = "{0:<%d}: {1}" % max_width
         return "\n".join(fmt.format(key, value) for key, value in self.values.items())
+
+class TableReport:
+    def __init__(self, data):
+        self.data = data
+    
+    def __call__(self):
+        return tab.tabulate(eval_tree(self.data), tablefmt="presto", headers="keys")
+
+def print_report(fname, name, data):
+    tk.register_report(
+        os.path.join(fname, "summary", "{}.txt".format(name)),
+        TableReport(data),
+    )
+
+class ReportSystem:
+    def __init__(self, fname):
+        self.fname = fname
+
+    def print(self, name, data):
+        print_report(self.fname, name, data)
 
 class GenericReport:
     def __init__(self, cols, values, fmt_percent=False, add_latex=False):

@@ -70,7 +70,7 @@ class ReturnnCleanupOldModelsJob(Job):
             extra_args["mini_task"] = True
         if isinstance(self.config, ReturnnCleanerConfig):
             yield Task('create_files', mini_task=True)
-        yield Task('run', rqmt = self.rqmt, **extra_args)
+        yield Task('run', rqmt = self.rqmt, resume="run", **extra_args)
     
     def create_files(self):
         self.config.write(self.config_file)

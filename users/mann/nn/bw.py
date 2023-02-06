@@ -138,7 +138,12 @@ class ScaleConfig(returnn.ReturnnConfig):
         if save_under:
             tk.register_output(f"nn_configs/{save_under}/fastbw.config", config_file)
         config_str = delayed_ops.DelayedFormat("--config={}", config_file)
-        new_config.config["network"]["fast_bw"]["sprint_opts"]["sprintConfigStr"] = config_str
+        if "network" in new_config.config:
+            new_config.config["network"]["fast_bw"]["sprint_opts"]["sprintConfigStr"] = config_str
+        else:
+            assert new_config.staged_network_dict
+            for net in new_config.staged_network_dict.values():
+                net["fast_bw"]["sprint_opts"]["sprintConfigStr"] = config_str
         return new_config
 
 def read_model_from_checkpoint(
