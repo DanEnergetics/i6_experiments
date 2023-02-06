@@ -48,18 +48,18 @@ def blstm_network(layers, input_layers, dropout=0.1, l2=0.0):
     return network, output_layers
 
 
-def get_nn_args(num_outputs: int = 12001, num_epochs: int = 250):
-    evaluation_epochs  = list(np.arange(250, num_epochs + 1, 10))
+def get_nn_args(num_outputs: int = 12001, num_epochs: int = 250, extra_exps=False):
+    evaluation_epochs  = list(np.arange(num_epochs, num_epochs + 1, 10))
 
     returnn_configs = get_returnn_configs(
         num_inputs=50, num_outputs=num_outputs, batch_size=5000,
-        evaluation_epochs=evaluation_epochs
+        evaluation_epochs=evaluation_epochs, extra_exps=extra_exps,
     )
 
     returnn_recog_configs = get_returnn_configs(
         num_inputs=50, num_outputs=num_outputs, batch_size=5000,
         evaluation_epochs=evaluation_epochs,
-        recognition=True,
+        recognition=True, extra_exps=extra_exps,
     )
 
 
@@ -103,6 +103,7 @@ def get_nn_args(num_outputs: int = 12001, num_epochs: int = 250):
             "lmgc_mem": 16,
             "cpu": 4,
             "parallelize_conversion": True,
+            "forward_output_layer": "log_output",
         },
     }
     test_recognition_args = None
@@ -118,7 +119,7 @@ def get_nn_args(num_outputs: int = 12001, num_epochs: int = 250):
     return nn_args
 
 
-def get_feature_extraction_args():
+def get_feature_extraction_args(fix_features_output=False):
     dc_detection = False
     samples_options = {
         'audio_format': "wav",
@@ -146,13 +147,14 @@ def get_feature_extraction_args():
                 "without_samples": False,
                 "samples_options": samples_options,
                 "normalization_options": {},
+                "add_features_output": fix_features_output,
             }
-        }
+        },
     }
 
 def get_returnn_configs(
         num_inputs: int, num_outputs: int, batch_size: int, evaluation_epochs: List[int],
-        recognition=False,
+        recognition=False, extra_exps=False
 ):
     # ******************** blstm base ********************
 
@@ -224,119 +226,34 @@ def get_returnn_configs(
         }
     )
 
-    blstm_base_returnn_config = ReturnnConfig(
-        config=blstm_base_config,
-        post_config=base_post_config,
-        hash_full_python_code=True,
-        python_prolog=get_funcs(),
-        pprint_kwargs={"sort_dicts": False},
-    )
+    def make_returnn_config(config):
+        return ReturnnConfig(
+            config=config,
+            post_config=base_post_config,
+            hash_full_python_code=True,
+            python_prolog=get_funcs(),
+            pprint_kwargs={"sort_dicts": False},
+        )
+    blstm_base_returnn_config = make_returnn_config(blstm_base_config)
 
-    return {
-        "blstm_base": blstm_base_returnn_config,
-    }
+    if extra_exps:
+        oclr_v1_config = copy.deepcopy(blstm_base_config)
+        oclr_v1_config["learning_rates"] = list(np.linspace(2.5e-5, 3e-4, 50)) + list(np.linspace(3e-4, 2.5e-5, 50))
+        oclr_v1_config["newbob_multi_num_epochs"] = 3
+        oclr_v1_nofl_config = copy.deepcopy(oclr_v1_config)
+        oclr_v1_nofl_config["network"]["output"]["loss_opts"] = None
+        oclr_v2_config = copy.deepcopy(blstm_base_config)
+        oclr_v2_config["learning_rates"] = list(np.linspace(2.5e-5, 4e-4, 50)) + list(np.linspace(4e-4, 2.5e-5, 50))
+        oclr_v2_config["newbob_multi_num_epochs"] = 3
 
-
-def get_default_data_init_args(num_inputs: int, num_outputs: int):
-    """
-    default for this hybrid model
-
-    :param num_inputs:
-    :param num_outputs:
-    :return:
-    """
-    time_dim = DimInitArgs("data_time", dim=None)
-    data_feature = DimInitArgs("data_feature", dim=num_inputs)
-    classes_feature = DimInitArgs("classes_feature", dim=num_outputs)
-
-    return [
-        DataInitArgs(name="data", available_for_inference=True, dim_tags=[time_dim, data_feature], sparse_dim=None),
-        DataInitArgs(name="classes", available_for_inference=False, dim_tags=[time_dim], sparse_dim=classes_feature)
-    ]
-
-def get_rc_returnn_configs(
-        num_inputs: int, num_outputs: int, batch_size: int, evaluation_epochs: List[int],
-        recognition=False,
-):
-    # ******************** blstm base ********************
-
-    base_config = {
-    }
-    base_post_config = {
-        "use_tensorflow": True,
-        "debug_print_layer_output_template": True,
-        "log_batch_size": True,
-        "tf_log_memory_usage": True,
-        "cache_size": "0",
-
-    }
-
-    blstm_base_config = copy.deepcopy(base_config)
-    blstm_base_config.update(
-        {
-            "batch_size": batch_size,  # {"classes": batch_size, "data": batch_size},
-            "chunking": "50:25",
-            "optimizer": {"class": "nadam", "epsilon": 1e-8},
-            "gradient_noise": 0.3,
-            "learning_rates": list(np.linspace(2.5e-5, 2.5e-4, 10)),
-            "learning_rate_control": "newbob_multi_epoch",
-            "learning_rate_control_min_num_epochs_per_new_lr": 3,
-            "learning_rate_control_relative_error_relative_lr": True,
-            #"min_learning_rate": 1e-5,
-            "newbob_learning_rate_decay": 0.707,
-            "newbob_multi_num_epochs": 40,
-            "newbob_multi_update_interval": 1,
+        return {
+            "blstm_oclr_v1": make_returnn_config(oclr_v1_config),
+            "blstm_oclr_v1_nofl": make_returnn_config(oclr_v1_nofl_config),
+            "blstm_oclr_v2": make_returnn_config(oclr_v2_config),
+            "blstm_base": blstm_base_returnn_config,
         }
-    )
-    if not recognition:
-        base_post_config["cleanup_old_models"] = {
-            "keep_last_n": 5,
-            "keep_best_n": 5,
-            "keep": evaluation_epochs,
+    else:
+        return {
+            "blstm_base": blstm_base_returnn_config,
         }
 
-    rc_extern_data = ExternData(extern_data=get_default_data_init_args(num_inputs=num_inputs, num_outputs=num_outputs))
-
-    rc_package = "i6_experiments.users.rossenbach.experiments.librispeech.librispeech_100_hybrid.rc_networks"
-    rc_encoder = Import(rc_package + ".default_hybrid.BLSTMEncoder")
-    rc_construction_code = Import(rc_package + ".default_hybrid.construct_hybrid_network")
-
-    rc_network = Network(
-        net_func_name=rc_construction_code.object_name,
-        net_func_map={
-            "encoder": rc_encoder.object_name,
-            "train": not recognition,
-            "audio_data": "data",
-            "label_data": "classes"
-        },
-        net_kwargs={
-            "num_layers": 6,
-            "size": 512,
-            "dropout": 0.1,
-        },
-    )
-
-    serializer = Collection(
-        serializer_objects=[
-            rc_extern_data,
-            rc_encoder,
-            rc_construction_code,
-            rc_network,
-        ],
-        returnn_common_root=RETURNN_COMMON,
-        make_local_package_copy=True,
-        packages={
-            rc_package,
-        },
-    )
-
-    blstm_base_returnn_config = ReturnnConfig(
-        config=blstm_base_config,
-        post_config=base_post_config,
-        python_epilog=[serializer],
-        pprint_kwargs={"sort_dicts": False},
-    )
-
-    return {
-        "blstm_base": blstm_base_returnn_config,
-    }

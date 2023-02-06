@@ -20,6 +20,7 @@ import i6_core.cart as cart
 import i6_core.corpus as corpus_recipes
 import i6_core.features as features
 import i6_core.lda as lda
+import i6_core.lm as lm
 import i6_core.meta as meta
 import i6_core.mm as mm
 import i6_core.sat as sat
@@ -129,7 +130,7 @@ class GmmSystem(RasrSystem):
             "selected": gs.JOB_DEFAULT_KEEP_VALUE,
         }
 
-        self.outputs = defaultdict(dict)  # type: Dict[GmmOutput]
+        self.outputs = defaultdict(dict)  # type: Dict[str, Dict[str, GmmOutput]]
 
     # -------------------- Setup --------------------
     def init_system(
@@ -148,7 +149,7 @@ class GmmSystem(RasrSystem):
     ):
         """
         TODO: docstring
-        :param hybrid_init_args:
+        :param rasr_init_args:
         :param train_data:
         :param dev_data:
         :param test_data:
@@ -212,25 +213,29 @@ class GmmSystem(RasrSystem):
         align_keep_values: Optional[dict] = None,
         split_keep_values: Optional[dict] = None,
         accum_keep_values: Optional[dict] = None,
-        dump_alignment_score_report=False,
+        dump_alignment_score_report: bool = False,
+        mark_accumulate: bool = False,
+        mark_align: bool = False,
         **kwargs,
     ):
         """
         TODO: docstring
-        :param name:
-        :param corpus_key:
-        :param linear_alignment_args:
+        :param name: Name of the step
+        :param corpus_key: Corpus key to perform training on
+        :param linear_alignment_args: extra arguments for the linear alignment
         :param feature_energy_flow_key:
         :param feature_flow:
-        :param align_iter:
-        :param splits:
-        :param accs_per_split:
+        :param align_iter: number of align steps
+        :param splits: number of split steps
+        :param accs_per_split: number of accumulates per split
         :param align_keep_values: sisyphus keep values for cleaning of alignment jobs
         :param split_keep_values: sisyphus keep values for cleaning of split jobs
         :param accum_keep_values: sisyphus keep values for cleaning of accumulation jobs
         :param dump_alignment_score_report: collect the alignment logs and write the report.
             please do not activate this flag if you already cleaned all alignments, as then all deleted
             jobs will re-run.
+        :param mark_accumulate: Passed to split_and_accumulate_sequence, defines accums to be marked
+        :param mark_align: Passed to split_and_accumulate_sequence, defines alings to be marked
         :param kwargs: passed to AlignSplitAccumulateSequence
         :return:
         """
@@ -244,12 +249,14 @@ class GmmSystem(RasrSystem):
             )
 
         action_sequence = meta.align_and_accumulate_sequence(
-            align_iter, 1, mark_accumulate=False, mark_align=False
+            align_iter,
+            1,
+            mark_accumulate=mark_accumulate,
+            mark_align=mark_align,
         )
         action_sequence += meta.split_and_accumulate_sequence(
             splits, accs_per_split
         ) + ["align!"]
-
         akv = dict(**self.default_align_keep_values)
         if align_keep_values is not None:
             akv.update(align_keep_values)
@@ -1289,6 +1296,7 @@ class GmmSystem(RasrSystem):
                 self.sat_recognition(
                     name=f"{trn_c}-{name}",
                     corpus_key=tst_c,
+                    train_corpus_key=trn_c,
                     feature_scorer_key=feature_scorer,
                     **recog_args,
                 )
@@ -1329,6 +1337,7 @@ class GmmSystem(RasrSystem):
                 self.sat_recognition(
                     name=f"{trn_c}-{name}",
                     corpus_key=tst_c,
+                    train_corpus_key=trn_c,
                     feature_scorer_key=feature_scorer,
                     **recog_args,
                 )
@@ -1462,14 +1471,7 @@ class GmmSystem(RasrSystem):
             self.store_allophones(source_corpus=trn_c, target_corpus=trn_c)
             tk.register_output(f"{trn_c}.allophones", self.allophone_files[trn_c])
 
-        for eval_c in self.dev_corpora + self.test_corpora:
-            stm_args = (
-                self.rasr_init_args.stm_args
-                if self.rasr_init_args.stm_args is not None
-                else {}
-            )
-            self.create_stm_from_corpus(eval_c, **stm_args)
-            self._set_scorer_for_corpus(eval_c)
+        self.prepare_scoring()
 
         for step_idx, (step_name, step_args) in enumerate(steps.get_step_iter()):
             # ---------- Feature Extraction ----------

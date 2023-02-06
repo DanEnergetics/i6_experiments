@@ -3,24 +3,34 @@ helpers for training
 """
 
 from __future__ import annotations
-from typing import Optional, Union, Dict, Any
-import numpy
+
+from typing import Optional, Union, Dict, Any, Sequence
+
+import inspect
 from i6_core.returnn.training import ReturnnTrainingJob
 from i6_core.returnn.config import ReturnnConfig
 from i6_experiments.common.setups.returnn_common import serialization
 from returnn_common import nn
-from .model import ModelWithCheckpoint, Checkpoint, AlignmentCollection, ModelT, ModelDef, TrainDef, FramewiseTrainDef
-from .task import Task
+
+from i6_experiments.users.zeyer.model_interfaces import ModelWithCheckpoints, Checkpoint, AlignmentCollection, \
+    ModelT, ModelDef, TrainDef, FramewiseTrainDef
+from i6_experiments.users.zeyer.datasets.task import Task
+from i6_experiments.users.zeyer.recog import SharedPostConfig
 
 
-def train(*,
+def train(prefix_name: str,
+          *,
           task: Task,
+          config: Dict[str, Any],
+          post_config: Optional[Dict[str, Any]] = None,
+          epilog: Sequence[serialization.SerializerObject] = (),
           alignment: Optional[AlignmentCollection] = None,  # TODO... metadataset...
           model_def: ModelDef[ModelT],
           train_def: Union[TrainDef[ModelT], FramewiseTrainDef[ModelT]],
           init_params: Optional[Checkpoint] = None,
           extra_hash: Any = None,
-          ) -> ModelWithCheckpoint:
+          **kwargs
+          ) -> ModelWithCheckpoints:
     """
     train
 
@@ -29,11 +39,9 @@ def train(*,
     - extra_hash: explicitly goes into the hash
     - others just as one would expect
     """
-    num_epochs = 150
-
     returnn_train_config_dict = dict(
         use_tensorflow=True,
-        behavior_version=12,
+        behavior_version=model_def.behavior_version,
 
         # dataset
         default_input=task.train_dataset.get_default_input(),
@@ -41,35 +49,24 @@ def train(*,
         train=task.train_dataset.get_train_dataset(),
         eval_datasets=task.train_dataset.get_eval_datasets(),
 
-        batching="random",
-        batch_size=10000,
-        max_seqs=200,
-        max_seq_length={task.train_dataset.get_default_target(): 75},
-
-        # gradient_clip=0,
-        # gradient_clip_global_norm = 1.0
-        optimizer={"class": "nadam", "epsilon": 1e-8},
-        # gradient_noise=0.0,
-        learning_rate=0.0008,
-        learning_rates=[0.0003] * 10 + list(numpy.linspace(0.0003, 0.0008, num=10)),
-        learning_rate_control="newbob_multi_epoch",
-        # learning_rate_control_error_measure = "dev_score_output"
-        # learning_rate_control_error_measure="dev_error_output/output_prob",  # TODO...
-        # TODO on LR control key:
-        #  we could make the train_def actually return the main key for this? but this is maybe not intuitive.
-        #  we could also extend returnn_common mark_as_loss with an option, "main_lr_key" or so.
-        learning_rate_control_relative_error_relative_lr=True,
-        learning_rate_control_min_num_epochs_per_new_lr=3,
-        use_learning_rate_control_always=True,
+        learning_rate_control_error_measure=train_def.learning_rate_control_error_measure,
         newbob_multi_num_epochs=task.train_epoch_split,
-        newbob_multi_update_interval=1,
-        newbob_learning_rate_decay=0.7,
+
+        **config
     )
+
+    max_seq_length_default_target = returnn_train_config_dict.pop("max_seq_length_default_target", None)
+    if max_seq_length_default_target is not None:
+        max_seq_length = returnn_train_config_dict.setdefault("max_seq_length", {})
+        assert isinstance(max_seq_length, dict)
+        max_seq_length[task.train_dataset.get_default_target()] = max_seq_length_default_target
 
     if alignment:
         # TODO... metadataset etc...
         # dummy for now, just insert them into the dict, to get the dependency
         returnn_train_config_dict["_alignment_train_TODO"] = alignment.alignments["train"].hdf_files
+        from sisyphus import tk
+        returnn_train_config_dict["_alignment_train_TODO2"] = tk.Path("<non-existing-file>")
 
     if init_params:
         returnn_train_config_dict["import_model_train_epoch1"] = init_params
@@ -95,13 +92,14 @@ def train(*,
                 serialization.PythonEnlargeStackWorkaroundNonhashedCode,
                 serialization.PythonCacheManagerFunctionNonhashedCode,
                 serialization.PythonModelineNonhashedCode,
-            ]
+            ] + list(epilog)
         )],
         post_config=dict(  # not hashed
             log_batch_size=True,
             tf_log_memory_usage=True,
             tf_session_opts={"gpu_options": {"allow_growth": True}},
             cleanup_old_models=True,
+            restart_after_num_net_reinit=1,  # gets OOM after a few reinits due to pretraining...
             # debug_add_check_numerics_ops = True
             # debug_add_check_numerics_on_output = True
             # stop_on_nonfinite_train_score = False,
@@ -109,15 +107,25 @@ def train(*,
         ),
         sort_config=False,
     )
+    if post_config:
+        returnn_train_config.post_config.update(post_config)
 
-    returnn_train_job = ReturnnTrainingJob(
-        returnn_train_config,
-        log_verbosity=5, num_epochs=num_epochs,
-        time_rqmt=80, mem_rqmt=15, cpu_rqmt=4)
+    for k, v in SharedPostConfig.items():
+        if k in returnn_train_config.config or k in returnn_train_config.post_config:
+            continue
+        returnn_train_config.post_config[k] = v
 
-    return ModelWithCheckpoint(
+    kwargs = kwargs.copy()
+    for k, v in dict(
+            log_verbosity=5, num_epochs=150,
+            time_rqmt=80, mem_rqmt=15, cpu_rqmt=4).items():
+        kwargs.setdefault(k, v)
+    returnn_train_job = ReturnnTrainingJob(returnn_train_config, **kwargs)
+    returnn_train_job.add_alias(prefix_name + "/train")
+
+    return ModelWithCheckpoints.from_training_job(
         definition=model_def,
-        checkpoint=returnn_train_job.out_checkpoints[num_epochs])
+        training_job=returnn_train_job)
 
 
 def _returnn_get_network(*, epoch: int, **_kwargs_unused) -> Dict[str, Any]:
@@ -135,7 +143,11 @@ def _returnn_get_network(*, epoch: int, **_kwargs_unused) -> Dict[str, Any]:
     data = nn.get_extern_data(data)
     targets = nn.get_extern_data(targets)
     model_def = config.typed_value("_model_def")
-    model = model_def(epoch=epoch, target_dim=targets.feature_dim)
+    extra_kwargs = {}
+    model_def_sig = inspect.signature(model_def)
+    if "training" in model_def_sig.parameters:
+        extra_kwargs["training"] = True
+    model = model_def(epoch=epoch, in_dim=data.feature_dim, target_dim=targets.feature_dim, **extra_kwargs)
     train_def = config.typed_value("_train_def")
     train_def(
         model=model,

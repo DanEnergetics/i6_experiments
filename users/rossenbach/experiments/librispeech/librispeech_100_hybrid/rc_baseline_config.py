@@ -1,6 +1,7 @@
 import copy
+from dataclasses import dataclass
 import numpy as np
-from typing import List
+from typing import List, Dict, Any
 
 from i6_core.returnn.config import ReturnnConfig
 from i6_experiments.common.setups.rasr.util import HybridArgs
@@ -11,19 +12,20 @@ from i6_experiments.common.setups.returnn_common.serialization import (
     Collection,
     Network,
     ExternData,
-    Import
+    Import,
+    ExplicitHash
 )
 
 
 from .default_tools import RETURNN_COMMON
 
 
-def get_nn_args(num_outputs: int = 12001, num_epochs: int = 250):
-    evaluation_epochs  = list(np.arange(250, num_epochs + 1, 10))
+def get_nn_args(num_outputs: int = 12001, num_epochs: int = 250, use_rasr_returnn_training=True, **net_kwargs):
+    evaluation_epochs  = list(range(num_epochs, num_epochs + 1, 10))
 
     returnn_configs = get_rc_returnn_configs(
         num_inputs=50, num_outputs=num_outputs, batch_size=5000,
-        evaluation_epochs=evaluation_epochs
+        evaluation_epochs=evaluation_epochs,
     )
 
     returnn_recog_configs = get_rc_returnn_configs(
@@ -36,15 +38,18 @@ def get_nn_args(num_outputs: int = 12001, num_epochs: int = 250):
     training_args = {
         "log_verbosity": 5,
         "num_epochs": num_epochs,
-        "num_classes": num_outputs,
         "save_interval": 1,
         "keep_epochs": None,
         "time_rqmt": 168,
-        "mem_rqmt": 7,
+        "mem_rqmt": 8,
         "cpu_rqmt": 3,
-        "partition_epochs": {"train": 40, "dev": 20},
-        "use_python_control": False,
     }
+
+    if use_rasr_returnn_training:
+        training_args["num_classes"] = num_outputs
+        training_args["use_python_control"] = False
+        training_args["partition_epochs"] = {"train": 40, "dev": 20}
+
     recognition_args = {
         "dev-other": {
             "epochs": evaluation_epochs,
@@ -73,6 +78,7 @@ def get_nn_args(num_outputs: int = 12001, num_epochs: int = 250):
             "lmgc_mem": 16,
             "cpu": 4,
             "parallelize_conversion": True,
+            "use_epoch_for_compile": True,
         },
     }
     test_recognition_args = None
@@ -86,39 +92,6 @@ def get_nn_args(num_outputs: int = 12001, num_epochs: int = 250):
     )
 
     return nn_args
-
-
-def get_feature_extraction_args():
-    dc_detection = False
-    samples_options = {
-        'audio_format': "wav",
-        'dc_detection': dc_detection,
-    }
-
-    return {
-        "gt": {
-            "gt_options": {
-                "minfreq": 100,
-                "maxfreq": 7500,
-                "channels": 50,
-                # "warp_freqbreak": 7400,
-                "tempint_type": "hanning",
-                "tempint_shift": 0.01,
-                "tempint_length": 0.025,
-                "flush_before_gap": True,
-                "do_specint": False,
-                "specint_type": "hanning",
-                "specint_shift": 4,
-                "specint_length": 9,
-                "normalize": True,
-                "preemphasis": True,
-                "legacy_scaling": False,
-                "without_samples": False,
-                "samples_options": samples_options,
-                "normalization_options": {},
-            }
-        }
-    }
 
 
 def get_default_data_init_args(num_inputs: int, num_outputs: int):
@@ -138,9 +111,11 @@ def get_default_data_init_args(num_inputs: int, num_outputs: int):
         DataInitArgs(name="classes", available_for_inference=False, dim_tags=[time_dim], sparse_dim=classes_feature)
     ]
 
+
+
 def get_rc_returnn_configs(
         num_inputs: int, num_outputs: int, batch_size: int, evaluation_epochs: List[int],
-        recognition=False,
+        recognition=False
 ):
     # ******************** blstm base ********************
 
@@ -158,11 +133,12 @@ def get_rc_returnn_configs(
     blstm_base_config = copy.deepcopy(base_config)
     blstm_base_config.update(
         {
+            "behavior_version": 15,
             "batch_size": batch_size,  # {"classes": batch_size, "data": batch_size},
             "chunking": "50:25",
             "optimizer": {"class": "nadam", "epsilon": 1e-8},
             "gradient_noise": 0.3,
-            "learning_rates": list(np.linspace(2.5e-5, 2.5e-4, 10)),
+            "learning_rates": list(np.linspace(2.5e-5, 3e-4, 50)) + list(np.linspace(3e-4, 2.5e-5, 50)),
             "learning_rate_control": "newbob_multi_epoch",
             "learning_rate_control_min_num_epochs_per_new_lr": 3,
             "learning_rate_control_relative_error_relative_lr": True,
@@ -181,46 +157,63 @@ def get_rc_returnn_configs(
 
     rc_extern_data = ExternData(extern_data=get_default_data_init_args(num_inputs=num_inputs, num_outputs=num_outputs))
 
+    # those are hashed
     rc_package = "i6_experiments.users.rossenbach.experiments.librispeech.librispeech_100_hybrid.rc_networks"
-    rc_encoder = Import(rc_package + ".default_hybrid.BLSTMEncoder")
-    rc_construction_code = Import(rc_package + ".default_hybrid.construct_hybrid_network")
+    rc_construction_code = Import(rc_package + ".default_hybrid_v2.construct_hybrid_network")
 
-    rc_network = Network(
-        net_func_name=rc_construction_code.object_name,
-        net_func_map={
-            "encoder": rc_encoder.object_name,
-            "audio_data": "data",  # name of the constructor parameter vs name of the data object in RETURNN
-            "label_data": "classes"
-        },
-        net_kwargs={
-            "train": not recognition,
-            "num_layers": 6,
-            "size": 512,
-            "dropout": 0.1,
-        },
-    )
 
-    serializer = Collection(
-        serializer_objects=[
+    net_kwargs = {
+       "train": not recognition,
+       "num_layers": 8,
+       "size": 1024,
+       "dropout": 0.0,
+       "specaugment_options": {
+           "min_frame_masks": 1,
+           "mask_each_n_frames": 100,
+           "max_frames_per_mask": 20,
+           "min_feature_masks": 1,
+           "max_feature_masks": 2,
+           "max_features_per_mask": 10
+       }
+    }
+
+    net_kwargs_focal_loss = copy.deepcopy(net_kwargs)
+    net_kwargs_focal_loss["focal_loss_scale"] = 2.0
+
+    def construct_from_net_kwargs(base_config, net_kwargs, explicit_hash=None):
+        rc_network = Network(
+            net_func_name=rc_construction_code.object_name,
+            net_func_map={
+                "audio_data": "data",  # name of the constructor parameter vs name of the data object in RETURNN
+                "label_data": "classes"
+            },  # this is hashed
+            net_kwargs=net_kwargs,
+        )
+        serializer_objects = [
             rc_extern_data,
-            rc_encoder,
             rc_construction_code,
             rc_network,
-        ],
-        returnn_common_root=RETURNN_COMMON,
-        make_local_package_copy=True,
-        packages={
-            rc_package,
-        },
-    )
+        ]
+        if explicit_hash:
+            serializer_objects.append(ExplicitHash(explicit_hash))
+        serializer = Collection(
+            serializer_objects=serializer_objects,
+            returnn_common_root=RETURNN_COMMON,
+            make_local_package_copy=True,
+            packages={
+                rc_package,
+            },
+        )
 
-    blstm_base_returnn_config = ReturnnConfig(
-        config=blstm_base_config,
-        post_config=base_post_config,
-        python_epilog=[serializer],
-        pprint_kwargs={"sort_dicts": False},
-    )
+        blstm_base_returnn_config = ReturnnConfig(
+            config=base_config,
+            post_config=base_post_config,
+            python_epilog=[serializer],
+            pprint_kwargs={"sort_dicts": False},
+        )
+        return blstm_base_returnn_config
 
     return {
-        "blstm_base": blstm_base_returnn_config,
+        "blstm_oclr_v1": construct_from_net_kwargs(blstm_base_config, net_kwargs),
+        "blstm_oclr_v1_focal_loss": construct_from_net_kwargs(blstm_base_config, net_kwargs_focal_loss),
     }

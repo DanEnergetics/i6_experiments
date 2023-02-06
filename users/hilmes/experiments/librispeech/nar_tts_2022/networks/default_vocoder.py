@@ -307,7 +307,7 @@ class LJSpeechMiniGLVocoder:
       self.train_job.out_returnn_config_file,
     )
 
-  def vocode(self, hdf_input, iterations=1, checkpoint=None, name=None, cleanup=False):
+  def vocode(self, hdf_input, iterations=1, checkpoint=None, name=None, cleanup=False, recon_norm=True):
     if name is None:
       name = self._alias_path
     forward_config = self.build_forward_config(hdf_input)
@@ -338,6 +338,7 @@ class LJSpeechMiniGLVocoder:
       file_format="ogg",
       mem_rqmt=16,
       time_rqmt=16,
+      peak_normalization=recon_norm
     )
     hdf_reconstruct.add_alias(os.path.join(name, "hdf_reconstruction"))
     if cleanup == True:

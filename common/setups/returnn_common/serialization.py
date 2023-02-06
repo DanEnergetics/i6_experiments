@@ -44,6 +44,7 @@ Usage Example::
 
 from dataclasses import dataclass, asdict
 from typing import Any, List, Union, Optional, Dict, Set
+from types import FunctionType
 import os
 import sys
 import pathlib
@@ -299,7 +300,7 @@ class Import(SerializerObject):
 
     def __init__(
         self,
-        code_object_path: Union[str, Any],
+        code_object_path: Union[str, FunctionType, Any],
         import_as: Optional[str] = None,
         *,
         use_for_hash: bool = True,
@@ -527,7 +528,7 @@ PythonCacheManagerFunctionNonhashedCode = NonhashedCode(
             try:
                 cached_fn = check_output(["cf", filename]).strip().decode("utf8")
             except CalledProcessError:
-                print("Cache manager: Error occured, using local file")
+                print("Cache manager: Error occurred, using local file")
                 return filename
             assert os.path.exists(cached_fn)
             _cf_cache[filename] = cached_fn

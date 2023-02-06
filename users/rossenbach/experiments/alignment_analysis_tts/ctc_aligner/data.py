@@ -4,6 +4,7 @@ from sisyphus import tk
 from typing import Dict
 
 from i6_core.returnn.dataset import SpeakerLabelHDFFromBlissJob
+from i6_core.returnn.oggzip import BlissToOggZipJob
 
 from i6_experiments.users.rossenbach.common_setups.returnn.datasets import GenericDataset, OggZipDataset, HDFDataset
 from i6_experiments.users.rossenbach.common_setups.returnn.datastreams.base import Datastream
@@ -13,8 +14,7 @@ from i6_experiments.users.rossenbach.datasets.librispeech import get_librispeech
 
 from ..data import (
     get_tts_log_mel_datastream,
-    get_ls100_silence_preprocess_ogg_zip,
-    get_ls100_silence_preprocessed_bliss,
+    get_bliss_and_zip,
     get_vocab_datastream,
     make_meta_dataset
 )
@@ -32,20 +32,18 @@ class AlignmentTrainingDatasets:
     datastreams: Dict[str, Datastream]
 
 
-def build_training_dataset(center : bool = False) -> AlignmentTrainingDatasets:
+def build_training_dataset(ls_corpus_key="train-clean-100", silence_preprocessed=True, center : bool = False) -> AlignmentTrainingDatasets:
     """
 
     :param center: do feature centering
     """
-
-    bliss_dataset = get_ls100_silence_preprocessed_bliss()
-    zip_dataset = get_ls100_silence_preprocess_ogg_zip()
+    bliss_dataset, zip_dataset = get_bliss_and_zip(ls_corpus_key=ls_corpus_key, silence_preprocessed=silence_preprocessed)
 
     # segments for train-clean-100-tts-train and train-clean-100-tts-dev
     # (1004 segments for dev, 4 segments for each of the 251 speakers)
-    train_segments, cv_segments = get_librispeech_tts_segments()
+    train_segments, cv_segments = get_librispeech_tts_segments(ls_corpus_key=ls_corpus_key)
 
-    vocab_datastream = get_vocab_datastream()
+    vocab_datastream = get_vocab_datastream(with_blank=True, corpus_key=ls_corpus_key)
     log_mel_datastream = get_tts_log_mel_datastream(center=center)
 
     # we currently assume that train and cv share the same corpus file
@@ -68,8 +66,8 @@ def build_training_dataset(center : bool = False) -> AlignmentTrainingDatasets:
 
     train_ogg_dataset = OggZipDataset(
         path=zip_dataset,
-        audio_opts=log_mel_datastream.as_returnn_audio_opts(),
-        target_opts=vocab_datastream.as_returnn_targets_opts(),
+        audio_options=log_mel_datastream.as_returnn_audio_opts(),
+        target_options=vocab_datastream.as_returnn_targets_opts(),
         segment_file=train_segments,
         partition_epoch=1,
         seq_ordering="laplace:.1000"
@@ -78,8 +76,8 @@ def build_training_dataset(center : bool = False) -> AlignmentTrainingDatasets:
 
     cv_ogg_dataset = OggZipDataset(
         path=zip_dataset,
-        audio_opts=log_mel_datastream.as_returnn_audio_opts(),
-        target_opts=vocab_datastream.as_returnn_targets_opts(),
+        audio_options=log_mel_datastream.as_returnn_audio_opts(),
+        target_options=vocab_datastream.as_returnn_targets_opts(),
         segment_file=cv_segments,
         partition_epoch=1,
         seq_ordering="sorted",
@@ -88,8 +86,8 @@ def build_training_dataset(center : bool = False) -> AlignmentTrainingDatasets:
 
     joint_ogg_zip = OggZipDataset(
         path=zip_dataset,
-        audio_opts=log_mel_datastream.as_returnn_audio_opts(),
-        target_opts=vocab_datastream.as_returnn_targets_opts(),
+        audio_options=log_mel_datastream.as_returnn_audio_opts(),
+        target_options=vocab_datastream.as_returnn_targets_opts(),
         partition_epoch=1,
         seq_ordering="sorted",
     )

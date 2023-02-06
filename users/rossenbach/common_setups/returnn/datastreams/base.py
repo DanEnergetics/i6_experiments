@@ -1,7 +1,8 @@
-from typing import *
 from sisyphus import tk
+from typing import *
 
-import asyncio
+from i6_experiments.common.setups.returnn_common.serialization import DataInitArgs, DimInitArgs
+
 
 class Datastream:
     """
@@ -29,53 +30,9 @@ class Datastream:
         }
         return opts
 
-    def as_returnn_common_data_and_dims(
-        self, name: str, available_for_inference: Optional[bool] = None, **kwargs
-    ):
-        """
-        :param datastream name (e.g. the datastream key)
-        :param available_for_inference:
-        :param kwargs:
-        """
-        d = self.as_returnn_extern_data_opts(
-            available_for_inference=available_for_inference
-        )
-        from returnn_common import nn
-
-        time_dim = nn.SpatialDim("%s_time" % name)
-        if isinstance(d["dim"], tk.Variable):
-            # for dynamic dims we need asynchron workflows
-            asyncio.gather(tk.async_run(d["dim"]))
-            dim = d["dim"].get()
-        else:
-            assert isinstance(d["dim"], int)
-            dim = d["dim"]
-        if d.get("sparse", False):
-            sparse_dim = nn.FeatureDim("%s_indices", dimension=dim)
-            data = nn.Data(
-                name=name,
-                available_for_inference=d["available_for_inference"],
-                dim_tags=[nn.batch_dim, time_dim],
-                sparse_dim=sparse_dim,
-                **kwargs,
-            )
-            return data, [time_dim, sparse_dim]
-        else:
-            feature_dim = nn.FeatureDim("%s_feature", dimension=dim)
-            data = nn.Data(
-                name=name,
-                available_for_inference=d["available_for_inference"],
-                dim_tags=[nn.batch_dim, time_dim, feature_dim],
-                **kwargs,
-            )
-            return data, [time_dim, feature_dim]
-
-
     def as_nnet_constructor_data(
             self, name: str, available_for_inference: Optional[bool] = None, **kwargs
     ):
-        from i6_experiments.users.rossenbach.returnn.nnet_constructor import DataInitArgs, DimInitArgs
-
         d = self.as_returnn_extern_data_opts(
             available_for_inference=available_for_inference
         )
@@ -112,4 +69,37 @@ class Datastream:
             )
 
 
+class FeatureDatastream(Datastream):
+    """
+    Defines a datastream for an arbitrary feature
+    """
 
+    def __init__(
+            self,
+            available_for_inference: bool,
+            feature_size: Union[tk.Variable, int],
+    ):
+        """
+
+        :param bool available_for_inference:
+        :Param tk.Variable|int embedding_size:
+        """
+        super().__init__(available_for_inference)
+        self.feature_size = feature_size
+
+    def as_returnn_extern_data_opts(
+            self, available_for_inference: Optional[bool] = None, **kwargs
+    ) -> Dict[str, Any]:
+        """
+        :param available_for_inference:
+        :rtype: dict[str]
+        """
+        d = {
+            **super().as_returnn_extern_data_opts(
+                available_for_inference=available_for_inference
+            ),
+            "shape": (None, self.feature_size),
+            "dim": self.feature_size,
+        }
+        d.update(kwargs)
+        return d

@@ -26,6 +26,13 @@ class DBMelFilterbankOptions(AdditionalFeatureOptions):
     min_amp: float = 1e-10
     center: bool = True
 
+@dataclasses.dataclass(frozen=True)
+class LinearFilterbankOptions(AdditionalFeatureOptions):
+    """
+    additional options for linear_spectrogram features
+    """
+    center: bool = True
+
 
 @dataclasses.dataclass(frozen=True)
 class MFCCOptions(AdditionalFeatureOptions):
@@ -43,7 +50,7 @@ KNOWN_FEATURES = {
     "log_mel_filterbank": [type(None)],
     "log_log_mel_filterbank": [type(None)],
     "db_mel_filterbank": [type(None), DBMelFilterbankOptions],
-    "linear_spectrogram": [type(None)],
+    "linear_spectrogram": [type(None), LinearFilterbankOptions],
 }
 
 
@@ -74,7 +81,6 @@ class ReturnnAudioFeatureOptions:
     :param peak_normalization:
     :param preemphasis:
     """
-
     window_len: float = 0.025
     step_len: float = 0.010
     num_feature_filters: int = None
@@ -90,6 +96,12 @@ class ReturnnAudioFeatureOptions:
         if isinstance(self.features, FeatureType):
             # dataclass is frozen, so directly alter the self.__dict__
             self.__dict__["features"] = self.features.value
+
+
+@dataclasses.dataclass(frozen=True)
+class ReturnnAudioRawOptions:
+    peak_normalization: bool = True
+    preemphasis: float = None
 
 
 class AudioFeatureDatastream(Datastream):
@@ -178,15 +190,15 @@ class AudioFeatureDatastream(Datastream):
             This is usually done for TTS.
         :param returnn_python_exe:
         :param returnn_root:
-        :param output_prefix: sets alias folder for ExtractDatasetStatisticsJob
+        :param alias_path: sets alias folder for ExtractDatasetStatisticsJob
         :return: audio datastream with added global feature statistics
         :rtype: AudioFeatureDatastream
         """
         extraction_dataset = OggZipDataset(
             path=zip_datasets,
             segment_file=segment_file,
-            audio_opts=self.as_returnn_audio_opts(),
-            target_opts=None,
+            audio_options=self.as_returnn_audio_opts(),
+            target_options=None,
         )
 
         extraction_config = ReturnnConfig(
@@ -214,6 +226,50 @@ class AudioFeatureDatastream(Datastream):
             ] = extract_dataset_statistics_job.out_std_dev_file
 
 
+class AudioRawDatastream(Datastream):
+    """
+    Encapsulates options for audio features used by OggZipDataset via :class:`ExtractAudioFeaturesOptions` in RETURNN
+    """
+
+    def __init__(
+            self,
+            available_for_inference: bool,
+            options: ReturnnAudioRawOptions,
+            **kwargs,
+    ):
+        super().__init__(available_for_inference)
+        self.options = options
+
+
+    def as_returnn_extern_data_opts(
+            self, available_for_inference: Optional[bool] = None
+    ) -> Dict[str, Any]:
+        """
+        :param bool available_for_inference: allows to overwrite the given state if desired. This can be used in case
+            the stream is used as output of one model but as input to the next one.
+        :return: dictionary for an `extern_data` entry.
+        """
+        return {
+            **super().as_returnn_extern_data_opts(
+                available_for_inference=available_for_inference
+            ),
+            "shape": (None, 1),
+            "dim": 1,
+        }
+
+    def as_returnn_data_opts(
+        self, available_for_inference: Optional[bool] = None
+    ) -> Dict[str, Any]:
+        return self.as_returnn_extern_data_opts(available_for_inference=available_for_inference)
+
+    def as_returnn_audio_opts(self) -> Dict[str, Any]:
+        """
+        :return: dictionary for `ExtractAudioFeatures` parameters, e.g. as `audio` parameter of the OggZipDataset
+        """
+        audio_opts_dict = dataclasses.asdict(self.options)
+        return {'features': "raw", **audio_opts_dict}
+
+
 def get_default_asr_audio_datastream(
     statistics_ogg_zips: List[tk.Path],
     returnn_python_exe: tk.Path,
@@ -227,7 +283,7 @@ def get_default_asr_audio_datastream(
     This function serves as an example for ASR Systems, and should be copied and modified in the
     specific experiments if changes to the default parameters are needed
 
-    :param statistics_ogg_zip: ogg zip file(s) of the training corpus for statistics
+    :param statistics_ogg_zips: ogg zip file(s) of the training corpus for statistics
     :param returnn_python_exe:
     :param returnn_root:
     :param alias_path:

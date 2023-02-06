@@ -1,5 +1,6 @@
 __all__ = ["RasrSystem"]
 
+import copy
 from typing import List, Optional, Tuple, Union
 
 # -------------------- Sisyphus --------------------
@@ -165,10 +166,11 @@ class RasrSystem(meta.System):
         :param eval_corpus_key:
         :return:
         """
+        scorer_args = copy.deepcopy(self.rasr_init_args.scorer_args)
         if self.rasr_init_args.scorer == "kaldi":
             scorer_args = (
-                self.rasr_init_args.scorer_args
-                if self.rasr_init_args.scorer_args is not None
+                scorer_args
+                if scorer_args is not None
                 else dict(mapping={"[SILENCE]": ""})
             )
             self.set_kaldi_scorer(
@@ -176,17 +178,30 @@ class RasrSystem(meta.System):
                 **scorer_args,
             )
         elif self.rasr_init_args.scorer == "hub5":
-            self.set_hub5_scorer(corpus=eval_corpus_key)
+            scorer_args = scorer_args if scorer_args is not None else {}
+            self.set_hub5_scorer(corpus=eval_corpus_key, **scorer_args)
         else:
             scorer_args = (
-                self.rasr_init_args.scorer_args
-                if self.rasr_init_args.scorer_args is not None
-                else dict(sort_files=False)
+                scorer_args if scorer_args is not None else dict(sort_files=False)
             )
             self.set_sclite_scorer(
                 corpus=eval_corpus_key,
                 **scorer_args,
             )
+
+    def prepare_scoring(self):
+        """
+        Initializes the scorer for each dev and test corpus, and create stm files if not already given
+        """
+        for eval_c in self.dev_corpora + self.test_corpora:
+            if eval_c not in self.stm_files:
+                stm_args = (
+                    self.rasr_init_args.stm_args
+                    if self.rasr_init_args.stm_args is not None
+                    else {}
+                )
+                self.create_stm_from_corpus(eval_c, **stm_args)
+            self._set_scorer_for_corpus(eval_c)
 
     @staticmethod
     def _assert_corpus_name_unique(*args):
@@ -248,6 +263,10 @@ class RasrSystem(meta.System):
         self._init_lexicon(corpus_key, **data.lexicon)
         if add_lm:
             self._init_lm(corpus_key, **data.lm)
+        if data.stm is not None:
+            self.stm_files[corpus_key] = data.stm
+        if data.glm is not None:
+            self.glm_files[corpus_key] = data.glm
         tk.register_output(
             f"corpora/{corpus_key}.xml.gz", data.corpus_object.corpus_file
         )
@@ -279,16 +298,20 @@ class RasrSystem(meta.System):
                 self.generic_features(corpus, k, **v)
 
     @tk.block()
-    def extract_features(self, feat_args: dict, **kwargs):
+    def extract_features(
+        self, feat_args: dict, corpus_list: Optional[List[str]] = None, **kwargs
+    ):
         """
         TODO: docstring
         TODO: add more generic flow dependencies
 
         :param feat_args: see RasrInitArgs.feature_extraction_args
+        :param corpus_list:
         :param kwargs:
         :return:
         """
-        corpus_list = self.train_corpora + self.dev_corpora + self.test_corpora
+        if corpus_list is None:
+            corpus_list = self.train_corpora + self.dev_corpora + self.test_corpora
 
         for c in corpus_list:
             self.extract_features_for_corpus(c, feat_args)
@@ -339,10 +362,18 @@ class RasrSystem(meta.System):
     def forced_align(
         self,
         name: str,
+        *,
         target_corpus_key: str,
-        flow: Union[str, List[str], Tuple[str], rasr.FlagDependentFlowAttribute],
-        feature_scorer: Union[str, List[str], Tuple[str], rasr.FeatureScorer],
+        flow: Union[
+            str,
+            List[str],
+            Tuple[str],
+            rasr.FlagDependentFlowAttribute,
+            rasr.FlowNetwork,
+        ],
         feature_scorer_corpus_key: str = None,
+        feature_scorer: Union[str, List[str], Tuple[str], rasr.FeatureScorer],
+        scorer_index: int = -1,
         dump_alignment: bool = False,
         **kwargs,
     ):
@@ -359,7 +390,10 @@ class RasrSystem(meta.System):
         :return:
         """
         selected_feature_scorer = meta.select_element(
-            self.feature_scorers, feature_scorer_corpus_key, feature_scorer
+            self.feature_scorers,
+            feature_scorer_corpus_key,
+            feature_scorer,
+            scorer_index,
         )
         self.align(
             name=name,
