@@ -2,11 +2,14 @@ from i6_core.returnn import CodeWrapper, ReturnnConfig
 from sisyphus.delayed_ops import DelayedFormat
 from sisyphus.tools import try_get
 
+from i6_core import util
 
 class CustomDelayedFormat(DelayedFormat):
     def get(self):
-        args = (try_get(i) for i in self.args)
-        kwargs = {k: try_get(v) for k, v in self.kwargs.items()}
+        # args = (try_get(i) for i in self.args)
+        # kwargs = {k: try_get(v) for k, v in self.kwargs.items()}
+        args = util.instanciate_delayed(self.args)
+        kwargs = util.instanciate_delayed(self.kwargs)
         return try_get(self.string).format(*args, **kwargs)
 
 class DelayedCodeWrapper(CustomDelayedFormat):

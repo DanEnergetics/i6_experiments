@@ -52,13 +52,18 @@ class FactoredHybridDecoder:
         "rtf": 20,
     }
 
-    def __init__(self, system=None, default_decoding_args=None):
+    def __init__(
+        self, system=None,
+        default_decoding_args=None,
+        use_native_ops=False,
+    ):
         self.system = system
 
         self.default_decoding_args = {
             # "context_type": ContextEnum.monophone,
             **(default_decoding_args or {}),
         }
+        self.use_native_ops = use_native_ops
         self.flows = defaultdict(lambda: defaultdict(dict))
         self.decoders = defaultdict(dict)
         self.init_env()
@@ -178,6 +183,7 @@ class FactoredHybridDecoder:
             model_path=system.nn_checkpoints[train_corpus][name][epoch],
             graph=compile_graph,
             mixtures=None,
+            tf_library=system.native_ops_path,
             eval_files=system.scorer_args[dev_corpus],
             is_multi_encoder_output=is_multi_encoder_output,
             tensor_mapping=self.get_tensor_mapping(context_type, transition_type)
@@ -271,6 +277,7 @@ class FactoredHybridDecoder:
                 model_path=system.nn_checkpoints[train_corpus][name][epoch],
                 graph=compile_graph,
                 mixtures=None,
+                tf_library=system.native_ops_path if self.use_native_ops else None,
                 # eval_files=system.scorer_args[corpus],
                 eval_files=None,
                 is_multi_encoder_output=is_multi_encoder_output,
@@ -286,6 +293,7 @@ class FactoredHybridDecoder:
             model_path=system.nn_checkpoints[train_corpus][name][epoch],
             graph=compile_graph,
             mixtures=None,
+            tf_library=system.native_ops_path if self.use_native_ops else None,
             # eval_files=system.scorer_args[dev_corpus],
             eval_files=None,
             is_multi_encoder_output=is_multi_encoder_output,

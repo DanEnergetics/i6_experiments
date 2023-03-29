@@ -23,7 +23,14 @@ def get_tdp_layer(num_classes, arch):
     return _archs[arch](num_classes)
     
 
-def get_model(num_classes, arch, init=None, init_args=None, extra_args=None, reduce=None):
+def get_model(
+    num_classes,
+    arch,
+    init=None,
+    init_args=None,
+    extra_args=None,
+    reduce=None
+):
     init_tdps = None
     if init is not None:
         init = init.copy()
@@ -41,6 +48,5 @@ def get_model(num_classes, arch, init=None, init_args=None, extra_args=None, red
         reduce = arch[len("label_"):]
         builder = sublabel_tdp_builders[reduce](**extra_args)
         return builder.build(num_classes, init_args=init_args)
-
 
     return _builders[arch].build(num_classes, init_tdps, init_args=init_args)

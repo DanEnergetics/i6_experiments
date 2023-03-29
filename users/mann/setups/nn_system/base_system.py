@@ -65,6 +65,7 @@ def feature_path(stub):
 
 from i6_experiments.common.setups.rasr import RasrSystem
 from i6_experiments.common.setups.rasr.nn_system import NnSystem as CommonNnSystem
+from ..util import DelayedPhonemeIndex, DelayedPhonemeInventorySize
 
 # from dataclasses import dataclass
 import dataclasses
@@ -103,6 +104,7 @@ class RecognitionConfig(AbstractConfig):
 	tdps : CombinedModel = NotSpecified
 	beam_pruning : float = NotSpecified
 	beam_pruning_threshold : Union[int, float] = NotSpecified
+	pronunciation_scale : float = NotSpecified
 	altas : Optional[float] = NotSpecified
 	extra_args : Optional[dict] = dataclasses.field(default_factory=dict)
 	extra_config : Optional[rasr.RasrConfig] = NotSpecified
@@ -142,6 +144,8 @@ class RecognitionConfig(AbstractConfig):
 			out_dict["search_parameters"]["beam-pruning"] = self.beam_pruning
 		if self.beam_pruning_threshold is not NotSpecified:
 			out_dict["search_parameters"]["beam-pruning-limit"] = self.beam_pruning_threshold
+		if self.pronunciation_scale is not NotSpecified:
+			out_dict["pronunciation_scale"] = self.pronunciation_scale
 		return out_dict
 		
 
@@ -240,6 +244,10 @@ class BaseSystem(RasrSystem):
 
 		from ..clean import LatticeCleaner
 		self.lattice_cleaner = LatticeCleaner()
+
+		self.state_tying_mode = None
+
+		self.all_segments = {}
 	
 	def add_overlay(self, origin, name):
 		super().add_overlay(origin, name)
@@ -264,30 +272,52 @@ class BaseSystem(RasrSystem):
 	def get_state_tying(self):
 		return self.csp['base'].acoustic_model_config.state_tying.type
 	
-	def set_state_tying(self, value, cart_file: Optional[tk.Path] = None, extra_args={}, hmm_partition=3, **kwargs):
+	def set_state_tying(
+		self,
+		value,
+		cart_file: Optional[tk.Path] = None,
+		extra_args={},
+		use_boundary_classes=False,
+		use_word_end_classes=False,
+		hmm_partition=3,
+		# **kwargs
+	):
 		assert value in {'monophone', 'cart', 'monophone-no-tying-dense', 'lut', 'lookup'}, "No other state tying types supported yet"
 		if value == 'cart': assert cart_file is not None, "Cart file must be specified"
 		for crp in self.crp.values():
+			del crp.acoustic_model_config.state_tying
 			crp.acoustic_model_config.state_tying.type = value
 			crp.acoustic_model_config.state_tying.file = cart_file
-			for k, v in {**extra_args, **kwargs}.items():
-				crp.acoustic_model_config.state_tying[k] = v
+			# for k, v in {**extra_args, **kwargs}.items():
+			# 	crp.acoustic_model_config.state_tying[k] = v
+			if use_boundary_classes or use_word_end_classes:
+				crp.acoustic_model_config.state_tying.use_boundary_classes = use_boundary_classes
+				crp.acoustic_model_config.state_tying.use_word_end_classes = use_word_end_classes
 			if hmm_partition != 3:
 				crp.acoustic_model_config.hmm.states_per_phone = hmm_partition
 		
 	def num_classes(self):
 		if self.get_state_tying() in self._num_classes_dict:
 			return self._num_classes_dict[self.get_state_tying()]
-		state_tying = DumpStateTyingJob(self.crp["train"]).out_state_tying
-		# tk.register_output("state-tying_mono", state_tying)
-		num_states = ExtractStateTyingStats(state_tying).out_num_states
-		return num_states
+		if self.state_tying_mode is None:
+			state_tying = DumpStateTyingJob(self.crp["train"]).out_state_tying
+			# tk.register_output("state-tying_mono", state_tying)
+			num_states = ExtractStateTyingStats(state_tying).out_num_states
+			return num_states
+		elif self.state_tying_mode == "dense":
+			assert "no-tying-dense" in self.get_state_tying()
+			num_labels = DelayedPhonemeInventorySize(self.crp["train"].lexicon_config.file)
+			we = self.crp["base"].acoustic_model_config.state_tying.use_word_end_classes
+			hmm_partition = self.crp["base"].acoustic_model_config.hmm.states_per_phone
+			return num_labels * hmm_partition * (2 if we else 1)
+		else:
+			raise AssertionError("Unknown state tying mode %s" % self.state_tying_mode)
 	
 	def get_allophone_file(self):
-		return StoreAllophonesJob(self.csp["train"]).out_allophone_file
+		return StoreAllophonesJob(self.crp["train"]).out_allophone_file
 	
-	def get_state_tying_file(self):
-		return DumpStateTyingJob(self.csp["train"]).out_state_tying
+	def get_state_tying_file(self, corpus="train"):
+		return DumpStateTyingJob(self.crp[corpus]).out_state_tying
 	
 	def silence_idx(self):
 		state_tying = DumpStateTyingJob(self.csp["train"]).out_state_tying
@@ -457,13 +487,14 @@ class BaseSystem(RasrSystem):
 				"alignment.log.*.gz"
 			)
 			alignment_logs = glob.glob(log_path_pattern)
+		segments = all_segments
 		if alignment_logs is not None:
 			import i6_experiments.users.mann.experimental.extractors as extr
 			from i6_core.corpus.filter import FilterSegmentsByListJob
 			filter_list = extr.ExtractAlignmentFailuresJob(alignment_logs).out_filter_list
-			all_segments = FilterSegmentsByListJob({1: all_segments.out_single_segment_files[1]}, filter_list)
+			segments = FilterSegmentsByListJob({1: all_segments.out_single_segment_files[1]}, filter_list)
 		new_segments = corpus_recipes.ShuffleAndSplitSegmentsJob(
-			segment_file=all_segments.out_single_segment_files[1],
+			segment_file=segments.out_single_segment_files[1],
 			split={ 'train': 1.0 - dev_size, 'dev': dev_size }
 		)
 
@@ -478,7 +509,9 @@ class BaseSystem(RasrSystem):
 		self.csp[overlay_name].concurrent   = 1
 		self.csp[overlay_name].segment_path = new_segments.out_segments['dev']
 
+		self.all_segments[corpus] = all_segments.out_single_segment_files[1]
 		self.jobs[corpus][              'all_segments_%s' % name] = all_segments
+		self.jobs[corpus]['all_segments'] = all_segments
 		self.jobs[corpus]['shuffle_and_split_segments_%s' % name] = new_segments
 
 		if 'train_corpus' not in self.default_nn_training_args:
@@ -527,6 +560,7 @@ class BaseSystem(RasrSystem):
 		returnn_config,
 		alias=None,
 		adjust_output_layer="output",
+		use_global_binaries=True,
 		**compile_args,
 	):
 		if hasattr(returnn_config, "build"):
@@ -552,6 +586,12 @@ class BaseSystem(RasrSystem):
 			})
 			config_dict['target'] = 'classes'
 		config_dict['num_outputs']['classes'] = [self.num_classes(), 1]
+		if not use_global_binaries:
+			compile_args = {
+				"returnn_python_exe": self.returnn_python_exe,
+				"returnn_root": self.returnn_root,
+				**compile_args,
+			}
 		compile_graph_job = crnn.CompileTFGraphJob(
 			config, **compile_args
 		)
@@ -752,10 +792,12 @@ class BaseSystem(RasrSystem):
 		train_args.update(training_args)
 		train_args['name']        = name
 		train_args['crnn_config'] = crnn_config
-		if self.returnn_root is not None:
-			train_args['returnn_root'] = self.returnn_root
-		if self.returnn_python_exe is not None:
-			train_args['returnn_python_exe'] = self.returnn_python_exe
+		# if self.returnn_root is not None:
+		# 	train_args['returnn_root'] = self.returnn_root
+		# if self.returnn_python_exe is not None:
+		# 	train_args['returnn_python_exe'] = self.returnn_python_exe
+		train_args.setdefault('returnn_root', self.returnn_root)
+		train_args.setdefault('returnn_python_exe', self.returnn_python_exe)
 
 		with tk.block('NN - %s' % name):
 			self.train_nn(**train_args)
@@ -822,7 +864,8 @@ class BaseSystem(RasrSystem):
 		optimize=True, use_tf_flow=False,
 		alt_training=False, dump_epochs=None,
 		compile_crnn_config=None,
-		alt_decoding=NotSpecified
+		alt_decoding=NotSpecified,
+		train_prefix=None,
 	):
 		if compile_args is None:
 			compile_args = {}
@@ -844,7 +887,8 @@ class BaseSystem(RasrSystem):
 			else:
 				self.train_nn(**train_args)
 			train_job = self.jobs[train_args['feature_corpus']]['train_nn_%s' % name]
-			train_job.add_alias('nn_%s' % name)
+			alias_prefix = train_prefix or "train_nn"
+			train_job.add_alias(os.path.join(alias_prefix, name))
 			self.nn_checkpoints[train_args['feature_corpus']][name] = train_job.out_checkpoints
 			tk.register_output('plot_se_%s.png' % name, train_job.out_plot_se)
 			tk.register_output('plot_lr_%s.png' % name, train_job.out_plot_lr)
@@ -900,23 +944,23 @@ class BaseSystem(RasrSystem):
 		return score_features
 			
 	def decode(
-			self,
-			name, epoch,
-			crnn_config,
-			training_args, scorer_args,
-			recognition_args,
-			extra_suffix=None,
-			recog_name=None,
-			compile_args=None,
-			compile_crnn_config=None,
-			reestimate_prior=False,
-			prior_config=None,
-			optimize=True,
-			clean=True,
-			_feature_scorer=None,
-			_adjust_train_args=True,
-			**_ignored
-		):
+		self,
+		name, epoch,
+		crnn_config,
+		training_args, scorer_args,
+		recognition_args,
+		extra_suffix=None,
+		recog_name=None,
+		compile_args=None,
+		compile_crnn_config=None,
+		reestimate_prior=False,
+		prior_config=None,
+		optimize=True,
+		clean=True,
+		_feature_scorer=None,
+		_adjust_train_args=True,
+		**_ignored
+	):
 		if _adjust_train_args:
 			if compile_args is None:
 				compile_args = {}
@@ -1088,7 +1132,9 @@ class BaseSystem(RasrSystem):
 			j.rqmt['time'] = time_rqmt
 		j.add_alias("align/%s" % name)
 		if evaluate:
-			stats = self.evaluate_alignment(name, corpus='train')
+			if not isinstance(evaluate, dict):
+				evaluate = {}
+			stats = self.evaluate_alignment(name, corpus='train', **evaluate)
 			return stats
 		if dump:
 			from recipe.mm import DumpAlignmentJob
@@ -1097,7 +1143,7 @@ class BaseSystem(RasrSystem):
 			return j.alignment_bundle
 		return None
   
-	def evaluate_alignment(self, name, corpus, alignment=None, alignment_logs=None):
+	def evaluate_alignment(self, name, corpus, alignment=None, alignment_logs=None, ref_alignment="init_align"):
 		from i6_core.corpus import FilterSegmentsByAlignmentConfidenceJob
 		from i6_experiments.users.mann.experimental.statistics.alignment import ComputeTseJob
 		from i6_experiments.users.mann.experimental.statistics import (
@@ -1141,16 +1187,15 @@ class BaseSystem(RasrSystem):
 		tk.register_output("stats_align/counts/{}".format(name), stats)
 
 		# compute TSE
-		try:
-			tse = ComputeTseJob(
-				alignment,
-				self.alignments["train"]["init_align"],
-				lbs_system.get_allophone_file()
-			)
-			tse.add_alias(f"tse-{name}")
-			tk.register_output("stats_align/tse/{}".format(name), tse.out_tse)
-		except:
-			return stats
+		tse = ComputeTseJob(
+			alignment,
+			meta.select_element(self.alignments, corpus, ref_alignment),
+			self.get_allophone_file()
+		)
+		tse.add_alias(f"tse-{name}")
+		tk.register_output("stats_align/tse/{}".format(name), tse.out_tse)
+		return stats
+
 
 	def run(self, steps='all'):
 		if steps == 'all':
@@ -1253,11 +1298,14 @@ class ConfigBuilder:
 		self.system = system
 		self.config_args = {}
 		self.network_args = {}
+		self.ce_args = {}
 		self.scales = {}
 		self.encoder = None
+		self.loss = "bw"
 		self.prior = "povey"
 		self.transforms = []
 		self.updates = {}
+		self.deletions = []
 
 	def set_ffnn(self):
 		self.encoder = viterbi_ffnn
@@ -1279,6 +1327,10 @@ class ConfigBuilder:
 		self.network_args = network_args
 		return self
 	
+	def set_ce_args(self, **ce_args):
+		self.ce_args = ce_args
+		return self
+	
 	def set_pretrain(self, **kwargs):
 		raise NotImplementedError()
 		return self
@@ -1286,6 +1338,11 @@ class ConfigBuilder:
 	def set_transcription_prior(self):
 		# self.transforms.append(self.system.prior_system.add_to_config)
 		self.prior = "transcription"
+		return self
+	
+	def set_loss(self, loss="bw"):
+		assert loss in ["bw", "viterbi"]
+		self.loss = loss
 		return self
 	
 	def set_povey_prior(self):
@@ -1299,8 +1356,12 @@ class ConfigBuilder:
 		self.prior = None
 		return self
 	
-	def set_scales(self, **scales):
-		self.scales.update(scales)
+	def set_scales(self, am=None, prior=None, tdp=None):
+		self.scales.update({
+			m + "_scale": v
+			for m, v in locals().items()
+			if m != "self" and v is not None
+		})
 		return self
 		
 	def set_tina_scales(self):
@@ -1316,14 +1377,25 @@ class ConfigBuilder:
 		new_instance.config_args = self.config_args.copy()
 		new_instance.network_args = self.network_args.copy()
 		new_instance.scales = self.scales.copy()
+		new_instance.ce_args = self.ce_args.copy()
 		new_instance.transforms = self.transforms.copy()
+		new_instance.updates = self.updates.copy()
+		new_instance.deletions = self.deletions.copy()
 		new_instance.encoder = self.encoder
 		new_instance.prior = self.prior
+		new_instance.loss = self.loss
 		return new_instance
 	
-	def set_oclr(self):
-		from i6_experiments.users.mann.nn import learning_rates
-		raise NotImplementedError()
+	def set_oclr(self, dur=None, **kwargs):
+		from i6_experiments.users.mann.nn.learning_rates import get_learning_rates
+		dur = dur or int(0.8 * max(self.system.default_epochs))
+		self.update({
+			"learning_rates": get_learning_rates(
+				increase=dur, decay=dur, **kwargs
+			),
+			"newbob_multi_num_epochs" : self.system.default_nn_training_args["partition_epochs"].get("train", 1),
+			"newbob_multi_update_interval" : 1,
+		})
 		return self
 	
 	def set_specaugment(self):
@@ -1331,36 +1403,80 @@ class ConfigBuilder:
 		self.transforms.append(specaugment.set_config)
 		return self
 	
-	def update(self, **kwargs):
-		self.updates.update(kwargs)
+	def update(self, *args, **kwargs):
+		self.updates.update(*args, **kwargs)
+		return self
+	
+	def delete(self, *args):
+		self.deletions += args
+		return self
 	
 	def build(self):
 		from i6_experiments.users.mann.nn import BASE_BW_LRS
 		from i6_experiments.users.mann.nn import prior, pretrain, bw, get_learning_rates
 		kwargs = BASE_BW_LRS.copy()
 		kwargs.update(self.config_args)
-		# network_kwargs.update(self.network_args)
-		# viterbi_config = viterbi_lstm(num_input, network_kwargs=network_kwargs, **kwargs)
-		viterbi_config_dict = self.encoder(self.system.num_input, network_kwargs=self.network_args, **kwargs)
+
+		if self.encoder is viterbi_lstm:
+			viterbi_config_dict = self.encoder(
+				self.system.num_input,
+				network_kwargs=self.network_args,
+				ce_args=self.ce_args,
+				**kwargs)
+		else:
+			viterbi_config_dict = self.encoder(
+				self.system.num_input,
+				network_kwargs=self.network_args,
+				**kwargs)
+
+		assert "chunking" in viterbi_config_dict.config
 
 		assert self.prior in ["povey", "transcription", None], "Unknown prior: {}".format(self.prior)
 
-		bw_config = bw.ScaleConfig.copy_add_bw(
-			viterbi_config_dict, self.system.csp["train"],
-			num_classes=self.system.num_classes(),
-			prior=self.prior,
-			**self.scales,
-		)
+		if self.loss == "bw":
+			config = bw.ScaleConfig.copy_add_bw(
+				viterbi_config_dict, self.system.csp["train"],
+				num_classes=self.system.num_classes(),
+				prior=self.prior,
+				**self.scales,
+			)
+		elif self.loss == "viterbi":
+			config = bw.ScaleConfig.from_config(viterbi_config_dict)
+		else:
+			raise ValueError("Unknown loss: {}".format(self.loss))
 
 		if self.prior == "transcription":
-			self.system.prior_system.add_to_config(bw_config)
+			assert self.loss == "bw"
+			self.system.prior_system.add_to_config(config)
 
 		for transform in self.transforms:
-			transform(bw_config)
+			transform(config)
 		
-		# bw_config.config.update(self.updates)
+		config.config.update(self.updates)
+
+		for key in self.deletions:
+			del config.config[key]
 		
-		return bw_config
+		return config
+	
+	def build_compile_config(self):
+		viterbi_config = self.encoder(
+			self.system.num_input,
+			network_kwargs=self.network_args,
+		)
+
+		net = viterbi_config.config["network"]
+		for key in ["loss", "loss_opts", "targets"]:
+			net["output"].pop(key, None)
+		net["output"]["n_out"] = self.system.num_classes()
+
+		pruned_config_dict = {
+			k: v for k, v in viterbi_config.config.items()
+			if k in ["network", "num_outputs", "extern_data"]
+		}
+
+		return crnn.ReturnnConfig(pruned_config_dict)
+
 
 class NNSystem(BaseSystem):
 	def __init__(self, num_input=None, epochs=None, rasr_binary_path=Default, **kwargs):
@@ -1523,6 +1639,10 @@ class NNSystem(BaseSystem):
 	def init_dump_system(self, segments, **default_dump_args):
 		from .. import dump
 		self.dump_system = dump.HdfDumpster(self, segments, default_dump_args)
+
+	def init_prior_system(system, total_frames, **kwargs):
+		from .. import prior
+		system.prior_system = prior.PriorSystem(system, total_frames, **kwargs)
 	
 	def clean(self, training_name, epochs, exec_immediately=False, cleaner_args=None, feature_corpus="train"):
 		from i6_core.returnn import WriteReturnnConfigJob
@@ -1628,8 +1748,8 @@ class NNSystem(BaseSystem):
 			for plugin, args in plugin_args.items():
 				self.plugins[plugin].apply(**args, **config_args)
 			if (
-				isinstance(crnn_config, bw.ScaleConfig)
-				or any(layer['class'] == 'fast_bw' for layer in crnn_config.config['network'].values())
+				isinstance(crnn_config, bw.ScaleConfig) and \
+					any(layer['class'] == 'fast_bw' for layer in crnn_config.config['network'].values())
 				) and 'additional_rasr_config_files' not in training_args:
 				additional_sprint_config_files, additional_sprint_post_config_files \
 					= add_fastbw_configs(self.csp[fast_bw_args.pop("corpus", "train")], **fast_bw_args) # TODO: corpus dependent and training args

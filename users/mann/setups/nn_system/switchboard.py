@@ -11,7 +11,7 @@ from recipe.i6_core import features
 from recipe.i6_core import returnn
 from recipe.i6_core import meta
 
-from recipe.i6_experiments.common.setups.rasr.util import RasrDataInput
+from recipe.i6_experiments.common.setups.rasr.util import RasrDataInput, RasrInitArgs
 from .common import init_segment_order_shuffle
 
 SCTK_PATH = Path('/u/beck/programs/sctk-2.4.0/bin/')
@@ -108,7 +108,7 @@ RASR_BINARY_PATH = Path('/work/tools/asr/rasr/20220603_github_default/arch/linux
 
 SCTK_PATH = Path('/u/beck/programs/sctk-2.4.0/bin/')
 
-TOTAL_FRAMES = 91026136
+TOTAL_FRAMES = 91_026_136
 
 from collections import namedtuple
 Binaries = namedtuple('Binaries', ['returnn', 'native_lstm', 'rasr'])
@@ -172,6 +172,16 @@ def get_legacy_switchboard_system(binaries: BinarySetup=BinarySetup.Download):
         returnn_root=binaries.returnn,
     )
 
+    system.rasr_init_args = RasrInitArgs(
+        am_args=None,
+        costa_args=None,
+        feature_extraction_args=None,
+        scorer="hub5",
+        scorer_args={"sctk_binary_path": SCTK_PATH},
+    )
+
+    system.dev_copora = ["dev"]
+
     # Create the system
     for c, subcorpus in subcorpus_mapping.items():
         corpus = legacy.corpora[c][subcorpus]
@@ -187,14 +197,17 @@ def get_legacy_switchboard_system(binaries: BinarySetup=BinarySetup.Download):
                 "type": "ARPA",
                 "scale": 12.0},
             concurrent=legacy.concurrent[train_eval_mapping[c]].get(subcorpus, 20),
+            glm=legacy.glm_path.get(subcorpus, None),
+            stm=legacy.stm_path.get(subcorpus, None),
         )
-
         system.add_corpus(c, rasr_input, add_lm=(c != "train"))
         system.feature_flows[c]['gt'] = features.basic_cache_flow(
             Path(default_feature_paths[c], cached=True),
         )
         system.feature_bundles[c]['gt'] = tk.Path(default_feature_paths[c], cached=True)
+    # system.prepare_scoring()
     system.alignments['train']['init_align'] = default_alignment_file
+    # system.alignments['train']['init_align'] = extra_alignment_file
     system.alignments['train']['init_gmm'] = extra_alignment_file
     system.alignments['train']['tuske'] = tuske_alignment_file
     system.mixtures['train']['init_mixture'] = default_mixture_path
@@ -214,8 +227,8 @@ def get_legacy_switchboard_system(binaries: BinarySetup=BinarySetup.Download):
     system.init_nn(**init_nn_args)
     for c in ["dev", "eval"]:
         # add glm and stm files
-        system.glm_files[c] = legacy.glm_path[subcorpus_mapping[c]]
-        system.stm_files[c] = legacy.stm_path[subcorpus_mapping[c]]
+        # system.glm_files[c] = legacy.glm_path[subcorpus_mapping[c]]
+        # system.stm_files[c] = legacy.stm_path[subcorpus_mapping[c]]
         system.set_hub5_scorer(corpus=c, sctk_binary_path=SCTK_PATH)
 
     # plugins
@@ -252,14 +265,21 @@ def init_extended_train_corpus(system, reinit_shuffle=True):
     system.add_overlay("train_magic", overlay_name)
     system.crp[overlay_name].concurrent = 1
     system.crp[overlay_name].corpus_config = corpus_config = system.crp[overlay_name].corpus_config._copy()
-    system.crp[overlay_name].segment_path = corpus.SegmentCorpusJob(corpus_config.file, num_segments=1).out_single_segment_files[1]
+    all_segments = corpus.SegmentCorpusJob(corpus_config.file, num_segments=1)
+    system.crp[overlay_name].segment_path = all_segments.out_single_segment_files[1]
+    system.jobs[overlay_name]["all_segments"] = all_segments
+    system.all_segments[overlay_name] = all_segments.out_single_segment_files[1]
 
     overlay_name = "returnn_cv_magic"
     system.add_overlay("dev", overlay_name)
     system.crp[overlay_name].concurrent = 1
-    system.crp[overlay_name].segment_path = "/work/asr4/raissi/ms-thesis-setups/lm-sa-swb/dependencies/cv-from-hub5-00/zhou-files-dev/segments"
+    # all_segments = Path("/work/asr4/raissi/ms-thesis-setups/lm-sa-swb/dependencies/cv-from-hub5-00/zhou-files-dev/segments")
+    all_segments = "/work/asr4/raissi/ms-thesis-setups/lm-sa-swb/dependencies/cv-from-hub5-00/zhou-files-dev/segments"
+    system.crp[overlay_name].segment_path = all_segments
     system.crp[overlay_name].corpus_config = corpus_config = system.crp[overlay_name].corpus_config._copy()
     system.crp[overlay_name].corpus_config.file = "/work/asr4/raissi/ms-thesis-setups/lm-sa-swb/dependencies/cv-from-hub5-00/zhou-files-dev/hub5_00.corpus.cleaned.gz"
+    system.all_segments[overlay_name] = all_segments
+
     system.crp[overlay_name].acoustic_model_config = system.crp[overlay_name].acoustic_model_config._copy()
     del system.crp[overlay_name].acoustic_model_config.tdp
     system.feature_bundles[overlay_name]["gt"] = tk.Path(cv_feature_bundle, cached=True)
@@ -279,87 +299,11 @@ def init_extended_train_corpus(system, reinit_shuffle=True):
             chunk_size = reinit_shuffle
         init_segment_order_shuffle(system, "returnn_train_magic", 300)
     
-    from i6_experiments.users.mann.setups.nn_system.trainer import RasrTrainer
-    system.set_trainer(RasrTrainer())
+    from i6_experiments.users.mann.setups.nn_system.trainer import RasrTrainerLegacy
+    system.set_trainer(RasrTrainerLegacy())
 
     return {
         "feature_corpus": "train_magic",
         "train_corpus": "returnn_train_magic",
         "dev_corpus": "returnn_cv_magic",
     }
-
-
-
-from collections import UserDict
-class CustomDict(UserDict):
-    """Custom dict that lets you map values of specific keys
-    to a different value.
-    """
-    def map_item(self, key, func):
-        d = self.copy()
-        d[key] = func(d[key])
-        return d
-    
-    def map(self, **kwargs):
-        d = self.copy()
-        for key, func in kwargs.items():
-            d[key] = func(d[key])
-        return d
-
-# make cart questions and estimate cart on alignment
-def make_cart(
-    system: BaseSystem,
-    hmm_partition: int=3,
-    as_lut=False
-):
-    # create cart questions
-    from i6_core.cart import PythonCartQuestions
-    from i6_core.meta import CartAndLDA
-    steps = legacy.cart_steps
-    if hmm_partition == 1:
-        steps = list(filter(lambda x: x["name"] != "hmm-state", steps))
-    cart_questions = PythonCartQuestions(
-        phonemes=legacy.cart_phonemes,
-        steps=steps,
-        hmm_states=hmm_partition,
-    )
-    
-    args = CustomDict(default_cart_lda_args.copy())
-    corpus = args.pop("corpus") 
-    context_size = args.pop("context_size")
-    select_feature_flow = lambda flow: meta.select_element(system.feature_flows, corpus, flow)
-    select_alignment = lambda alignment: meta.select_element(system.alignments, corpus, alignment)
-
-    from i6_core import lda
-    get_ctx_flow = lambda flow: lda.add_context_flow(
-            feature_net = system.feature_flows[corpus][flow],
-            max_size = context_size,
-            right = int(context_size / 2)
-        )
-    args = args.map(
-        initial_flow=select_feature_flow,
-        context_flow=get_ctx_flow,
-        alignment=select_alignment,
-    )
-    
-    # system.crp[corpus].acoustic_model_config.hmm.states_per_phone = hmm_partition
-    cart_and_lda = CartAndLDA(
-        original_crp=system.crp[corpus],
-        questions=cart_questions,
-        **args
-    )
-
-    system.set_state_tying("cart", cart_file=cart_and_lda.last_cart_tree)
-    system.set_num_classes("cart", cart_and_lda.last_num_cart_labels)
-
-    if as_lut:
-        lut_cart = system.get_state_tying_file() # direct state-tying from cart with still has 3 states per phone
-        print(lut_cart)
-        for crp in system.crp.values():
-            crp.acoustic_model_config.hmm.states_per_phone = 1
-        system.set_state_tying("lookup", cart_file=lut_cart)
-        lut = system.get_state_tying_file()
-        system.set_state_tying("lut", file=lut)
-        system.set_num_classes("lut", cart_and_lda.last_num_cart_labels)
-
-    return None

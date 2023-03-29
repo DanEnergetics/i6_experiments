@@ -1,7 +1,7 @@
 __all__ = ['CalculateSilenceStateLabel', 'get_prior_from_transcription']
 #credits reserved to Daniel Mann
 import numpy as np
-from sisyphus import tk
+from sisyphus import tk, Job
 
 from i6_core.corpus.transform import ApplyLexiconToCorpusJob
 from i6_core.lexicon.allophones import DumpStateTyingJob

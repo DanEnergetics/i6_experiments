@@ -222,14 +222,20 @@ class RecognitionTuner:
         tdp_scales=None,
         prior_scales=None,
         base_config=None,
+        all_scales=None,
     ):
+        # assert isinstance(system, RecognitionSystem)
+        assert (tdp_scales and prior_scales) != bool(all_scales)
         self.system = system
         self.tdp_scales = tdp_scales or self.TDP_SCALES
         self.prior_scales = prior_scales or self.PRIOR_SCALES
+        self._all_scales = all_scales
         self.base_config = base_config or self.BASE_CONFIG
     
     @property
     def all_scales(self):
+        if self._all_scales:
+            return self._all_scales
         return itertools.product(self.tdp_scales, self.prior_scales)
     
     def print_report(self, name, data):
@@ -492,12 +498,23 @@ class RecognitionTuner:
 class FactoredHybridTuner(RecognitionTuner):
     FWD_LOOP_SCALES = [0.1, 0.3, 0.5, 0.7, 1.0]
 
-    def __init__(self, system, tdp_scales=None, prior_scales=None, fwd_loop_scales=None, base_config=None):
-        super().__init__(system, tdp_scales, prior_scales, base_config)
+    def __init__(
+        self,
+        system,
+		tdp_scales=None,
+		prior_scales=None,
+		fwd_loop_scales=None,
+		all_scales=None,
+		base_config=None
+    ):
+        assert (tdp_scales and prior_scales and fwd_loop_scales) != bool(all_scales)
+        super().__init__(system, tdp_scales, prior_scales, base_config, all_scales=all_scales)
         self.fwd_loop_scales = fwd_loop_scales or self.FWD_LOOP_SCALES
     
     @property
     def all_scales(self):
+        if self._all_scales:
+            return self._all_scales
         return itertools.product(self.tdp_scales, self.prior_scales, self.fwd_loop_scales)
     
     def run_decode(

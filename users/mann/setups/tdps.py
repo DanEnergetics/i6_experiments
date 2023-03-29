@@ -307,9 +307,11 @@ class CombinedModel:
     def legacy(cls):
         return cls.from_weights(0.0, 3.0, 3.0, 0.0, 20.0, 30.0)
     
-    def adjust(self, **kwargs):
-        assert all(key in self.__dict__ for key in kwargs)
-        self.__dict__.update(kwargs)
+    def adjust(self, silence_exit=None, speech_skip=None):
+        # assert all(key in self.__dict__ for key in kwargs)
+        self.__dict__.update({
+            key: value for key, value in locals().items() if key != "self" and value is not None
+        })
         return self
     
     @classmethod

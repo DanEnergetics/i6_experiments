@@ -62,7 +62,7 @@ def add_bw_layer(csp, crnn_config, am_scale=1.0, ce_smoothing=0.0,
     crnn_config['network']['output_bw']['loss_opts']  = {"loss_wrt_to_act_in": "softmax", "align_layer": "fast_bw"}
 
     if not keep_ce:
-        assert isinstance(num_classes, (int, tk.Variable))
+        assert isinstance(num_classes, (int, tk.Variable, delayed_ops.DelayedBase))
         del crnn_config['network']['output']['loss']
         del crnn_config['network']['output']['loss_opts']
         crnn_config['network']['output']['n_out'] = num_classes
@@ -114,6 +114,7 @@ class ScaleConfig(returnn.ReturnnConfig):
     def set_tdp_scale(self, tdp_scale):
         assert isinstance(tdp_scale, (int, float))
         self.config["network"]["fast_bw"]["tdp_scale"] = tdp_scale
+        return self
     
     tdp_scale = property(get_tdp_scale, set_tdp_scale)
 

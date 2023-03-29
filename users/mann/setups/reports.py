@@ -8,8 +8,9 @@ import tabulate as tab
 def maybe_get(var):
     try:
         return var.get()
-    except VariableNotSet:
+    except (VariableNotSet, FileNotFoundError):
         return ""
+    # return var.get() if var.is_set() else ""
 
 def eval_tree(o, f=maybe_get, condition=lambda x: isinstance(x, DelayedBase)):
     """

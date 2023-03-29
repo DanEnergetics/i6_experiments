@@ -13,7 +13,7 @@ from i6_experiments.users.mann.experimental.statistics import (
 from i6_core.corpus.transform import ApplyLexiconToCorpusJob
 from i6_experiments.users.mann.setups.reports import DescValueReport, SimpleValueReport
 from i6_experiments.users.mann.setups.state_tying import Allophone
-from i6_core.util import uopen, get_val
+from i6_core.util import uopen, get_val, instanciate_delayed
 
 def output(name, value):
     opath = os.path.join(fname, name)
@@ -190,7 +190,11 @@ def get_prior_from_transcription_new(
 
 
 class PriorFromTranscriptionCounts(Job):
-    __sis_hash_exclude__ = { "eps": 0.0 }
+    __sis_hash_exclude__ = {
+        "eps": 0.0,
+        "num_states": None,
+    }
+
     def __init__(
         self,
         allophone_counts,
@@ -200,6 +204,7 @@ class PriorFromTranscriptionCounts(Job):
         average_phoneme_frames=8,
         hmm_partition=None,
         eps=0.0,
+        num_states=None,
         silence_phoneme="[SILENCE]"
     ):
         self.allophone_counts = allophone_counts
@@ -209,6 +214,7 @@ class PriorFromTranscriptionCounts(Job):
         self.average_phoneme_frames = average_phoneme_frames
         self.hmm_partition = hmm_partition
         self.eps = eps
+        self.num_states = num_states
         self.silence_phoneme = silence_phoneme
 
         self.out_prior_txt_file = self.output_path("prior.txt")
@@ -235,7 +241,8 @@ class PriorFromTranscriptionCounts(Job):
         if self.hmm_partition is None:
             # try to guess from state tying
             self.hmm_partition = max(map(lambda a: a.state, allophones)) + 1
-        num_states = max(map(lambda a: a.idx, allophones)) + 1
+        num_states = instanciate_delayed(self.num_states) \
+            or max(map(lambda a: a.idx, allophones)) + 1
         silence_idx = next(filter(lambda a: a.phon == self.silence_phoneme, allophones)).idx
 
         total_phoneme_count = get_val(self.total_count)
@@ -281,6 +288,7 @@ def get_prior_from_transcription_job(
     hmm_partition=None,
     lemma_end_prob=0.0,
     eps=0.0,
+    extra_num_states=False,
 ):
     transcribe_job = ApplyLexiconToCorpusJob(
         system.csp["train"].corpus_config.file,
@@ -303,6 +311,7 @@ def get_prior_from_transcription_job(
         num_frames=total_frames,
         hmm_partition=hmm_partition,
         eps=eps,
+        num_states=system.num_classes() if extra_num_states else None,
     )
 
     tk.register_output("prior_from_transcription", prior_job.out_prior_txt_file)
@@ -321,6 +330,7 @@ class PriorSystem:
         eps=0.0,
         extra_hmm_partition=None,
         lemma_end_probability=0.0,
+        extra_num_states=False,
     ):
         self.system = system
         self.total_frames = total_frames
@@ -328,6 +338,7 @@ class PriorSystem:
         self.hmm_partition = extra_hmm_partition
         self.lemma_end_probability = lemma_end_probability
         self._eps = None
+        self.extra_num_states = extra_num_states
         self.extract_prior()
     
     def extract_prior(self):
@@ -338,6 +349,7 @@ class PriorSystem:
             hmm_partition=self.hmm_partition,
             lemma_end_prob=self.lemma_end_probability,
             eps=self.eps,
+            extra_num_states=self.extra_num_states
         )
         self.prior_txt_file = self.prior_files["txt"]
         self.prior_xml_file = self.prior_files["xml"]

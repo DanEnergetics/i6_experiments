@@ -2,7 +2,7 @@ from sisyphus import tk
 from sisyphus.delayed_ops import DelayedFormat
 
 import copy
-from collections import ChainMap
+from collections import ChainMap, defaultdict
 
 from i6_core.rasr import WriteRasrConfigJob, RasrConfig, RasrCommand
 from i6_core.returnn import ReturnnTrainingJob, ReturnnRasrDumpHDFJob, ReturnnRasrTrainingJob, ReturnnComputePriorJob
@@ -154,6 +154,8 @@ class RasrTrainer(BaseTrainer):
         extra_rasr_config=None,
         extra_rasr_post_config=None,
         use_python_control=True,
+        chunk_size=0,
+        segments=None,
         **_ignored,
     ):
         kwargs = locals().copy()
@@ -164,6 +166,12 @@ class RasrTrainer(BaseTrainer):
             extra_rasr_config=extra_rasr_config,
             **kwargs,
         )
+        if chunk_size > 0:
+            config.neural_network_trainer.corpus.segment_order_shuffle = True
+            config.neural_network_trainer.corpus.segment_order_sort_by_time_length = True
+            config.neural_network_trainer.corpus.segment_order_sort_by_time_length_chunk_size = chunk_size
+        if segments is not None:
+            config.neural_network_trainer.corpus.segments.file = segments
         write_rasr_config = WriteRasrConfigJob(config, post_config)
         return write_rasr_config.out_config
     
@@ -188,6 +196,77 @@ class RasrTrainer(BaseTrainer):
             dataset["estimated_num_seqs"] = estimated_num_seqs
         return dataset
     
+    def filter_segments(self, corpus, segments):
+        from i6_core.corpus.segments import SegmentCorpusJob
+        all_segments = SegmentCorpusJob(self.system.corpora[corpus].corpus_file, 1).out_single_segment_files[1]
+        if isinstance(segments, str):
+            if segments.startswith("head:"):
+                num = int(segments.split(":")[1])
+                from i6_core.text import HeadJob
+                segments = HeadJob(all_segments, num_lines=num, zip_output=False).out
+                return segments
+        raise NotImplementedError("filter_segments for %s" % segments)
+    
+    def make_rasr_dataset(self,
+		name,
+		dataset_name,
+		corpus,
+		feature_flow,
+		alignment,
+        filter_segments=None,
+		**kwargs
+    ):
+        from i6_core.returnn import ReturnnRasrTrainingJob
+        from i6_core.rasr.flow import WriteFlowNetworkJob
+        alignment=select_element(self.system.alignments, corpus, alignment)
+        feature_flow = self.system.feature_flows[corpus][feature_flow]
+        feature_flow = ReturnnRasrTrainingJob.create_flow(feature_flow=feature_flow, alignment=alignment, **kwargs)
+        write_feature_flow = WriteFlowNetworkJob(flow=feature_flow)
+        if filter_segments is not None:
+            segments = self.filter_segments(corpus, filter_segments)
+            kwargs.update(segments=segments)
+        rasr_config_file = self.write_rasr_train_config(
+            self.system.crp[corpus], write_feature_flow.out_flow_file,
+            alignment=alignment,
+            **kwargs)
+        tk.register_output(f"nn_configs/{name}/rasr.{dataset_name}.config", rasr_config_file)
+        return self.get_rasr_dataset_config(self.system.crp[corpus], dataset_name, rasr_config_file, **kwargs)
+
+    def train(
+        self,
+        name,
+        partition_epochs,
+        returnn_config,
+        feature_corpus,
+        train_corpus,
+        dev_corpus,
+        num_classes=None,
+        alignment=None,
+        **kwargs
+    ):
+        num_classes = self.system.functor_value(num_classes)
+        returnn_config = copy.deepcopy(returnn_config)
+        training_args = ChainMap(locals().copy(), kwargs)
+        del training_args["self"], training_args["kwargs"]
+        if num_classes is not None:
+            returnn_config.config["num_outputs"]["classes"] = [self.system.functor_value(num_classes), 1]
+        if not isinstance(alignment, dict):
+            alignment = {"train": alignment, "dev": alignment}
+        for key, corpus in zip(["train", "dev"], [train_corpus, dev_corpus]):
+            returnn_config.config[key] = self.make_rasr_dataset(
+                name,
+                key,
+                corpus,
+                partition_epochs=partition_epochs.get(key, 1),
+                alignment=alignment[key],
+                **kwargs,
+            )
+        # training_args.maps.insert(0, data)
+        j = self.train_helper(**training_args)
+        self.configs[name] = returnn_config
+        self.save_job(feature_corpus, name, j)
+
+class RasrTrainerLegacy(RasrTrainer):
     def make_rasr_dataset(self, name, dataset_name, corpus, feature_flow, alignment, **kwargs):
         from i6_core.returnn import ReturnnRasrTrainingJob
         from i6_experiments.users.mann.experimental.write import WriteFlowNetworkJob
@@ -201,27 +280,6 @@ class RasrTrainer(BaseTrainer):
             **kwargs)
         tk.register_output(f"nn_configs/{name}/rasr.{dataset_name}.config", rasr_config_file)
         return self.get_rasr_dataset_config(self.system.crp[corpus], dataset_name, rasr_config_file, **kwargs)
-
-    def train(self, name, partition_epochs, returnn_config, feature_corpus, train_corpus, dev_corpus, num_classes=None, **kwargs):
-        num_classes = self.system.functor_value(num_classes)
-        returnn_config = copy.deepcopy(returnn_config)
-        training_args = ChainMap(locals().copy(), kwargs)
-        del training_args["self"], training_args["kwargs"]
-        if num_classes is not None:
-            returnn_config.config["num_outputs"]["classes"] = [self.system.functor_value(num_classes), 1]
-        for key, corpus in zip(["train", "dev"], [train_corpus, dev_corpus]):
-            returnn_config.config[key] = self.make_rasr_dataset(
-                name,
-                key,
-                corpus,
-                partition_epochs=partition_epochs.get(key, 1),
-                **kwargs,
-            )
-        # training_args.maps.insert(0, data)
-        j = self.train_helper(**training_args)
-        self.configs[name] = returnn_config
-        self.save_job(feature_corpus, name, j)
-
 
 
 class HdfAlignTrainer(BaseTrainer):
@@ -328,7 +386,7 @@ class HdfAlignTrainer(BaseTrainer):
         for key in ["train", "dev"]:
             returnn_config.config[key] = self.make_combined_ds(
                 key,
-                "crnn_" + key,
+                training_args[key + "_corpus"],
                 hdf_alignment,
                 partition_epochs[key],
                 rasr_args=dict(feature_corpus=feature_corpus, **kwargs),
