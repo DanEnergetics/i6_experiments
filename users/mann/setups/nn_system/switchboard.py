@@ -12,9 +12,11 @@ from recipe.i6_core import returnn
 from recipe.i6_core import meta
 
 from recipe.i6_experiments.common.setups.rasr.util import RasrDataInput, RasrInitArgs
-from .common import init_segment_order_shuffle
-
-SCTK_PATH = Path('/u/beck/programs/sctk-2.4.0/bin/')
+from .common import (
+    init_segment_order_shuffle,
+    init_extended_train_corpus,
+    Binaries,
+)
 
 init_nn_args = {
     'name': 'crnn',
@@ -25,15 +27,14 @@ init_nn_args = {
 
 default_nn_training_args = {
     'feature_corpus': 'train',
-    'alignment': ('train', 'init_align', -1),
-    'num_epochs': 320,
+    'num_epochs': 300,
     'partition_epochs': {'train': 6, 'dev' : 1},
     'save_interval': 4,
     'num_classes': lambda s: s.num_classes(),
     'time_rqmt': 120,
-    'mem_rqmt' : 12,
+    'mem_rqmt' : 24,
     'use_python_control': True,
-    'log_verbosity': 5,
+    'log_verbosity': 3,
     'feature_flow': 'gt'
 }
 
@@ -45,7 +46,6 @@ default_scorer_args = {
 
 default_recognition_args = {
     'corpus': 'dev',
-    # 'flow': 'gt',
     'pronunciation_scale': 1.0,
     'lm_scale': 10.,
     'search_parameters': {
@@ -71,13 +71,22 @@ default_cart_lda_args = {
 }
 
 # import paths
-default_reduced_segment_path = '/u/mann/experiments/librispeech/recipe/setups/mann/librispeech/reduced.train.segments'
-PREFIX_PATH                       = "/work/asr3/michel/setups-data/SWB_sis/"
-PREFIX_PATH_asr4                  = "/work/asr4/michel/setups-data/SWB_sis/"
-default_allophones_file      = PREFIX_PATH + "allophones/StoreAllophones.wNiR4cF7cdOE/output/allophones"
-default_alignment_file       = Path('/work/asr3/michel/setups-data/SWB_sis/mm/alignment/AlignmentJob.j3oDeQH1UNjp/output/alignment.cache.bundle', cached=True)
-extra_alignment_file         = Path('/work/asr4/michel/setups-data/SWB_sis/mm/alignment/AlignmentJob.BF7Xi6M0bF2X/output/alignment.cache.bundle', cached=True) # gmm
-tuske_alignment_file = Path('/work/asr2/zeyer/setups-data/switchboard/2016-01-28--crnn/tuske__2016_01_28__align.combined.train', cached=True)
+PREFIX_PATH = "/work/asr3/michel/setups-data/SWB_sis/"
+PREFIX_PATH_asr4 = "/work/asr4/michel/setups-data/SWB_sis/"
+
+external_alignments = {
+    "tuske": Path('/work/asr2/zeyer/setups-data/switchboard/2016-01-28--crnn/tuske__2016_01_28__align.combined.train', cached=True),
+    "init_align": Path('/work/asr3/michel/setups-data/SWB_sis/mm/alignment/AlignmentJob.j3oDeQH1UNjp/output/alignment.cache.bundle', cached=True),
+    "init_gmm": Path('/work/asr4/michel/setups-data/SWB_sis/mm/alignment/AlignmentJob.BF7Xi6M0bF2X/output/alignment.cache.bundle', cached=True),
+}
+
+external_alignment_logs = {
+    k: Path(
+        v.get_path()[:-len('cache.bundle')] + f'alignment.log.{id}.gz'
+    ) for k, v in external_alignments.items() for id in range(1, 201)
+    if k != 'tuske'
+}
+
 default_alignment_logs = ['/work/asr3/michel/setups-data/SWB_sis/' + \
     'mm/alignment/AlignmentJob.j3oDeQH1UNjp/output/alignment.log.{id}.gz' \
         .format(id=id) for id in range(1, 201)]
@@ -85,9 +94,9 @@ extra_alignment_logs = [
     f'/work/asr4/michel/setups-data/SWB_sis/mm/alignment/AlignmentJob.BF7Xi6M0bF2X/output/alignment.log.{id}.gz'
     for id in range(1, 201)
 ]
-default_cart_file            = Path(PREFIX_PATH + "cart/estimate/EstimateCartJob.Wxfsr7efOgnu/output/cart.tree.xml.gz", cached=True)
+default_cart_file = Path(PREFIX_PATH + "cart/estimate/EstimateCartJob.Wxfsr7efOgnu/output/cart.tree.xml.gz", cached=True)
 
-default_mixture_path  = Path(PREFIX_PATH_asr4 + "mm/mixtures/EstimateMixturesJob.accumulate.Fb561bWZLwiJ/output/am.mix",cached=True)
+default_mixture_path = Path(PREFIX_PATH_asr4 + "mm/mixtures/EstimateMixturesJob.accumulate.Fb561bWZLwiJ/output/am.mix",cached=True)
 default_mono_mixture_path = Path(PREFIX_PATH_asr4 + "mm/mixtures/EstimateMixturesJob.accumulate.m5wLIWW876pl/output/am.mix", cached=True)
 default_feature_paths = {
     'train': PREFIX_PATH + "features/extraction/FeatureExtraction.Gammatone.Jlfrg2riiRX3/output/gt.cache.bundle",
@@ -96,54 +105,17 @@ default_feature_paths = {
     "dev_extra": "/work/asr4/raissi/ms-thesis-setups/lm-sa-swb/dependencies/cv-from-hub5-00/features/gammatones/FeatureExtraction.Gammatone.pp9W8m2Z8mHU/output/gt.cache.bundle",
 }
 
-RETURNN_PYTHON_HOME = Path('/work/tools/asr/python/3.8.0_tf_1.15-generic+cuda10.1')
-RETURNN_PYTHON_EXE = Path('/work/tools/asr/python/3.8.0_tf_1.15-generic+cuda10.1/bin/python3.8')
-
-RETURNN_PYTHON_EXE_NEW = Path("/work/tools/asr/python/3.8.0_tf_2.3.4-generic+cuda10.1+mkl/bin/python3")
-RETURNN_PYTHON_HOME_NEW = Path("/work/tools/asr/python/3.8.0_tf_2.3.4-generic+cuda10.1+mkl")
-
-RETURNN_REPOSITORY_URL = 'https://github.com/rwth-i6/returnn.git'
-
-RASR_BINARY_PATH = Path('/work/tools/asr/rasr/20220603_github_default/arch/linux-x86_64-standard')
-
 SCTK_PATH = Path('/u/beck/programs/sctk-2.4.0/bin/')
 
 TOTAL_FRAMES = 91_026_136
 
-from collections import namedtuple
-Binaries = namedtuple('Binaries', ['returnn', 'native_lstm', 'rasr'])
+def get_prior_args():
+    return {
+        "total_frames": TOTAL_FRAMES,
+        "eps": 1e-12,
+    }
 
-def init_binaries():
-    # clone returnn
-    from i6_core.tools import CloneGitRepositoryJob
-    returnn_root_job = CloneGitRepositoryJob(
-        RETURNN_REPOSITORY_URL,
-    )
-    returnn_root_job.add_alias('returnn')
-    returnn_root = returnn_root_job.out_repository
-
-    # compile lstm ops
-    native_lstm = returnn.CompileNativeOpJob(
-        "NativeLstm2",
-        returnn_root=returnn_root,
-        returnn_python_exe=RETURNN_PYTHON_EXE_NEW,
-        search_numpy_blas=True
-    ).out_op
-
-    # compile rasr
-    from i6_experiments.common.tools.rasr import compile_rasr_binaries_i6mode
-    rasr_binary_path = compile_rasr_binaries_i6mode()
-    # rasr_binary_path = None
-    return Binaries(returnn_root, native_lstm, rasr_binary_path)
-
-def init_env():
-    # append compile op python libs to default environment
-    lib_subdir = "lib/python3.8/site-packages"
-    libs = ["numpy.libs", "scipy.libs", "tensorflow"]
-    path_buffer = ""
-    for lib in libs:
-        path_buffer += ":" + RETURNN_PYTHON_HOME_NEW.join_right(lib_subdir).join_right(lib) 
-    gs.DEFAULT_ENVIRONMENT_SET["LD_LIBRARY_PATH"] += path_buffer
+CORPUS_NAME = "switchboard-1"
 
 import enum
 class BinarySetup(enum.Enum):
@@ -165,11 +137,7 @@ def get_legacy_switchboard_system(binaries: BinarySetup=BinarySetup.Download):
     system = NNSystem(
         num_input=40,
         epochs=epochs,
-        rasr_binary_path=binaries.rasr,
         native_ops_path=binaries.native_lstm,
-        returnn_python_exe=RETURNN_PYTHON_EXE,
-        returnn_python_home=RETURNN_PYTHON_HOME,
-        returnn_root=binaries.returnn,
     )
 
     system.rasr_init_args = RasrInitArgs(
@@ -205,11 +173,8 @@ def get_legacy_switchboard_system(binaries: BinarySetup=BinarySetup.Download):
             Path(default_feature_paths[c], cached=True),
         )
         system.feature_bundles[c]['gt'] = tk.Path(default_feature_paths[c], cached=True)
-    # system.prepare_scoring()
-    system.alignments['train']['init_align'] = default_alignment_file
-    # system.alignments['train']['init_align'] = extra_alignment_file
-    system.alignments['train']['init_gmm'] = extra_alignment_file
-    system.alignments['train']['tuske'] = tuske_alignment_file
+
+    system.alignments["train"].update(external_alignments.copy())
     system.mixtures['train']['init_mixture'] = default_mixture_path
     system._init_am()
 
@@ -226,9 +191,6 @@ def get_legacy_switchboard_system(binaries: BinarySetup=BinarySetup.Download):
     
     system.init_nn(**init_nn_args)
     for c in ["dev", "eval"]:
-        # add glm and stm files
-        # system.glm_files[c] = legacy.glm_path[subcorpus_mapping[c]]
-        # system.stm_files[c] = legacy.stm_path[subcorpus_mapping[c]]
         system.set_hub5_scorer(corpus=c, sctk_binary_path=SCTK_PATH)
 
     # plugins
@@ -238,12 +200,33 @@ def get_legacy_switchboard_system(binaries: BinarySetup=BinarySetup.Download):
 def init_prior_system(system):
     system.prior_system = prior.PriorSystem(system, TOTAL_FRAMES)
 
+def add_zhou_corpus(system):
+    from recipe.i6_core import features
+    from recipe.i6_core import corpus
+
+    all_segments = "/work/asr4/raissi/ms-thesis-setups/lm-sa-swb/dependencies/cv-from-hub5-00/zhou-files-dev/segments"
+    cv_feature_bundle = "/work/asr4/raissi/ms-thesis-setups/lm-sa-swb/dependencies/cv-from-hub5-00/features/gammatones/FeatureExtraction.Gammatone.pp9W8m2Z8mHU/output/gt.cache.bundle"
+    corpus_file = "/work/asr4/raissi/ms-thesis-setups/lm-sa-swb/dependencies/cv-from-hub5-00/zhou-files-dev/hub5_00.corpus.cleaned.gz"
+
+    overlay_name = "dev_zhou"
+    system.add_overlay("dev", overlay_name)
+    system.crp[overlay_name].concurrent = 1
+    system.crp[overlay_name].segment_path = all_segments
+    system.crp[overlay_name].corpus_config = corpus_config = system.crp[overlay_name].corpus_config._copy()
+    system.crp[overlay_name].corpus_config.file = corpus_file
+    system.all_segments[overlay_name] = all_segments
+
+    system.crp[overlay_name].acoustic_model_config = system.crp[overlay_name].acoustic_model_config._copy()
+    del system.crp[overlay_name].acoustic_model_config.tdp
+    system.feature_bundles[overlay_name]["gt"] = tk.Path(cv_feature_bundle, cached=True)
+    system.feature_flows[overlay_name]["gt"] = flow = features.basic_cache_flow(tk.Path(cv_feature_bundle, cached=True))
+
 def get_bw_switchboard_system():
     from .librispeech import default_tf_native_ops
     binaries = Binaries(
-        returnn=tk.Path(gs.RETURNN_ROOT),
+        returnn=None,
         native_lstm=default_tf_native_ops,
-        rasr=tk.Path(gs.RASR_ROOT).join_right('arch/linux-x86_64-standard'),
+        rasr=None,
     )
     system = get_legacy_switchboard_system(binaries)
     # setup monophones
@@ -253,57 +236,24 @@ def get_bw_switchboard_system():
     system.default_nn_training_args["num_epochs"] = 300
     return system
 
-def init_extended_train_corpus(system, reinit_shuffle=True):
-    overlay_name = "train_magic"
-    system.add_overlay("train", overlay_name)
+def get():
+    res = get_bw_switchboard_system()
+    add_zhou_corpus(res)
 
-    from recipe.i6_core import features
-    from recipe.i6_core import corpus
+    init_extended_train_corpus(
+        res, CORPUS_NAME,
+        cv_source_corpus="dev_zhou",
+        legacy_trainer=True,
+    )
 
-    cv_feature_bundle = "/work/asr4/raissi/ms-thesis-setups/lm-sa-swb/dependencies/cv-from-hub5-00/features/gammatones/FeatureExtraction.Gammatone.pp9W8m2Z8mHU/output/gt.cache.bundle"
-    overlay_name = "returnn_train_magic"
-    system.add_overlay("train_magic", overlay_name)
-    system.crp[overlay_name].concurrent = 1
-    system.crp[overlay_name].corpus_config = corpus_config = system.crp[overlay_name].corpus_config._copy()
-    all_segments = corpus.SegmentCorpusJob(corpus_config.file, num_segments=1)
-    system.crp[overlay_name].segment_path = all_segments.out_single_segment_files[1]
-    system.jobs[overlay_name]["all_segments"] = all_segments
-    system.all_segments[overlay_name] = all_segments.out_single_segment_files[1]
+    res.init_dump_system(
+        segments=[
+            "switchboard-1/sw02001A/sw2001A-ms98-a-0041",
+            "switchboard-1/sw02001A/sw2001A-ms98-a-0047",
+            "switchboard-1/sw02001B/sw2001B-ms98-a-0004",
+            "switchboard-1/sw02001B/sw2001B-ms98-a-0024"
+        ],
+        occurrence_thresholds=(0.1, 0.05),
+    )
 
-    overlay_name = "returnn_cv_magic"
-    system.add_overlay("dev", overlay_name)
-    system.crp[overlay_name].concurrent = 1
-    # all_segments = Path("/work/asr4/raissi/ms-thesis-setups/lm-sa-swb/dependencies/cv-from-hub5-00/zhou-files-dev/segments")
-    all_segments = "/work/asr4/raissi/ms-thesis-setups/lm-sa-swb/dependencies/cv-from-hub5-00/zhou-files-dev/segments"
-    system.crp[overlay_name].segment_path = all_segments
-    system.crp[overlay_name].corpus_config = corpus_config = system.crp[overlay_name].corpus_config._copy()
-    system.crp[overlay_name].corpus_config.file = "/work/asr4/raissi/ms-thesis-setups/lm-sa-swb/dependencies/cv-from-hub5-00/zhou-files-dev/hub5_00.corpus.cleaned.gz"
-    system.all_segments[overlay_name] = all_segments
-
-    system.crp[overlay_name].acoustic_model_config = system.crp[overlay_name].acoustic_model_config._copy()
-    del system.crp[overlay_name].acoustic_model_config.tdp
-    system.feature_bundles[overlay_name]["gt"] = tk.Path(cv_feature_bundle, cached=True)
-    system.feature_flows[overlay_name]["gt"] = flow = features.basic_cache_flow(tk.Path(cv_feature_bundle, cached=True))
-
-    merged_corpus = corpus.MergeCorporaJob(
-        [system.crp[f"returnn_{k}_magic"].corpus_config.file for k in ["train", "cv"]],
-        name="switchboard-1",
-        merge_strategy=corpus.MergeStrategy.FLAT,
-    ).out_merged_corpus
-    system.crp["train_magic"].corpus_config = corpus_config = system.crp["train_magic"].corpus_config._copy()
-    system.crp["train_magic"].corpus_config.file = merged_corpus
-
-    if reinit_shuffle:
-        chunk_size = 300
-        if isinstance(reinit_shuffle, int):
-            chunk_size = reinit_shuffle
-        init_segment_order_shuffle(system, "returnn_train_magic", 300)
-    
-    from i6_experiments.users.mann.setups.nn_system.trainer import RasrTrainerLegacy
-    system.set_trainer(RasrTrainerLegacy())
-
-    return {
-        "feature_corpus": "train_magic",
-        "train_corpus": "returnn_train_magic",
-        "dev_corpus": "returnn_cv_magic",
-    }
+    return res

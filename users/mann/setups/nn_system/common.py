@@ -1,4 +1,10 @@
-__all__ = ["init_segment_order_shuffle", "rm_segment_order_shuffle", "init_binaries", "init_env"]
+__all__ = [
+    "init_segment_order_shuffle",
+    "rm_segment_order_shuffle",
+    "init_binaries",
+    "init_env",
+    "init_extended_train_corpus",
+]
 
 from sisyphus import Path, gs
 
@@ -144,6 +150,7 @@ def init_extended_train_corpus(
     train_source_corpus="train",
     cv_source_corpus="dev",
     reinit_shuffle=True,
+    legacy_trainer=False,
 ):
     overlay_name = "train_magic"
     system.add_overlay(train_source_corpus, overlay_name)
@@ -160,16 +167,20 @@ def init_extended_train_corpus(
     all_segments = corpus.SegmentCorpusJob(corpus_config.file, num_segments=1)
     system.crp[overlay_name].segment_path = all_segments.out_single_segment_files[1]
     system.jobs[overlay_name]["all_segments"] = all_segments
+    system.all_segments[overlay_name] = all_segments.out_single_segment_files[1]
 
     overlay_name = "returnn_cv_magic"
     system.add_overlay(cv_source_corpus, overlay_name)
     system.crp[overlay_name].concurrent = 1
     system.crp[overlay_name].corpus_config = corpus_config = system.crp[overlay_name].corpus_config._copy()
-    corpus_config.file = corpus.FilterCorpusRemoveUnknownWordSegmentsJob(corpus_config.file, system.crp[overlay_name].lexicon_config.file).out_corpus
+    # corpus_config.file = corpus.FilterCorpusRemoveUnknownWordSegmentsJob(corpus_config.file, system.crp[overlay_name].lexicon_config.file).out_corpus
 
-    all_segments = corpus.SegmentCorpusJob(corpus_config.file, num_segments=1)
-    system.crp[overlay_name].segment_path = all_segments.out_single_segment_files[1]
-    system.jobs[overlay_name]["all_segments"] = all_segments
+    if not (seg_path := system.crp[overlay_name].segment_path):
+        all_segments = corpus.SegmentCorpusJob(corpus_config.file, num_segments=1)
+        system.crp[overlay_name].segment_path = all_segments.out_single_segment_files[1]
+        system.jobs[overlay_name]["all_segments"] = all_segments
+        seg_path = all_segments.out_single_segment_files[1]
+    system.all_segments[overlay_name] = seg_path
 
     system.crp[overlay_name].acoustic_model_config = system.crp[overlay_name].acoustic_model_config._copy()
     del system.crp[overlay_name].acoustic_model_config.tdp
@@ -188,11 +199,39 @@ def init_extended_train_corpus(
             chunk_size = reinit_shuffle
         init_segment_order_shuffle(system, "returnn_train_magic", 300)
     
-    from i6_experiments.users.mann.setups.nn_system.trainer import RasrTrainer
-    system.set_trainer(RasrTrainer())
+    from i6_experiments.users.mann.setups.nn_system.trainer import RasrTrainer, RasrTrainerLegacy
+    system.set_trainer((RasrTrainerLegacy if legacy_trainer else RasrTrainer)())
 
-    return {
+    extra_args = {
         "feature_corpus": "train_magic",
         "train_corpus": "returnn_train_magic",
         "dev_corpus": "returnn_cv_magic",
     }
+
+    system.default_nn_training_args.update(extra_args)
+    return extra_args
+
+def init_system(
+    corpus,
+    output_subdir=None,
+    state_tying_args=None,
+):
+    import importlib
+
+    module_map = {
+        "swb": ".switchboard",
+        "ted": ".tedlium",
+        "lbs": ".librispeech",
+    }
+
+    corpus_config = importlib.import_module(module_map[corpus], package="i6_experiments.users.mann.setups.nn_system")
+    res_system = corpus_config.get()
+
+    res_system.init_report_system(output_subdir or gs.ALIAS_AND_OUTPUT_SUBDIR)
+    
+    if state_tying_args:
+        res_system.set_state_tying(**state_tying_args)
+    
+    res_system.init_prior_system(**corpus_config.get_prior_args())
+    
+    return res_system

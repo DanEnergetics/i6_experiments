@@ -276,11 +276,9 @@ class BaseSystem(RasrSystem):
 		self,
 		value,
 		cart_file: Optional[tk.Path] = None,
-		extra_args={},
 		use_boundary_classes=False,
 		use_word_end_classes=False,
 		hmm_partition=3,
-		# **kwargs
 	):
 		assert value in {'monophone', 'cart', 'monophone-no-tying-dense', 'lut', 'lookup'}, "No other state tying types supported yet"
 		if value == 'cart': assert cart_file is not None, "Cart file must be specified"
@@ -288,8 +286,6 @@ class BaseSystem(RasrSystem):
 			del crp.acoustic_model_config.state_tying
 			crp.acoustic_model_config.state_tying.type = value
 			crp.acoustic_model_config.state_tying.file = cart_file
-			# for k, v in {**extra_args, **kwargs}.items():
-			# 	crp.acoustic_model_config.state_tying[k] = v
 			if use_boundary_classes or use_word_end_classes:
 				crp.acoustic_model_config.state_tying.use_boundary_classes = use_boundary_classes
 				crp.acoustic_model_config.state_tying.use_word_end_classes = use_word_end_classes
@@ -1306,6 +1302,9 @@ class ConfigBuilder:
 		self.transforms = []
 		self.updates = {}
 		self.deletions = []
+	
+	def register(self, name):
+		self.system.builders[name] = self.copy()
 
 	def set_ffnn(self):
 		self.encoder = viterbi_ffnn
@@ -1506,115 +1505,13 @@ class NNSystem(BaseSystem):
 		).out_repository
 
 		from i6_experiments.users.mann.nn.config import viterbi_lstm
-		from i6_experiments.users.mann.nn import prior, pretrain, bw, get_learning_rates
-		def make_bw_lstm(
-			num_input, num_frames=None, transcription_prior=True,
-			numpy=False, tina=False,
-			config_args={}, network_args={}
-		) -> pretrain.PretrainConfigHolder:
-			from i6_experiments.users.mann.nn.config import BASE_BW_LRS
-			kwargs = BASE_BW_LRS.copy()
-			network_kwargs = {}
-			# if tina:
-			# 	from i6_experiments.users.mann.nn.constants import TINA_UPDATES_1K, TINA_NETWORK_CONFIG
-			kwargs.update(config_args)
-			network_kwargs.update(network_args)
-			viterbi_config = viterbi_lstm(num_input, network_kwargs=network_kwargs, **kwargs)
-			bw_config = bw.ScaleConfig.copy_add_bw(
-				viterbi_config, self.csp["train"],
-				am_scale=0.7, prior_scale=0.035,
-				tdp_scale=0.5,
-				num_classes=self.num_classes(),
-			)
-			# bw_config.config["learning_rates"] = get_learning_rates(increase=70, decay=70)
-			del bw_config.config["learning_rate"]
-			if transcription_prior:
-				self.prior_system.add_to_config(bw_config)
-			return pretrain.PretrainConfigHolder(
-					bw_config, rel_prior_scale=0.05
-			)
-
-		def make_bw(
-			num_input,
-			transcription_prior=True,
-			base_config=None,
-			config_args={}, network_args={},
-			scales=None,
-		) -> pretrain.PretrainConfigHolder:
-			from i6_experiments.users.mann.nn import BASE_BW_LRS
-			kwargs = BASE_BW_LRS.copy()
-			if not base_config:
-				network_kwargs = {}
-				kwargs.update(config_args)
-				network_kwargs.update(network_args)
-				viterbi_config = viterbi_lstm(num_input, network_kwargs=network_kwargs, **kwargs)
-			else:
-				viterbi_config = copy.deepcopy(base_config)
-				viterbi_config.config.update(config_args)
-			pretrain_scales = True
-			if scales == "tina":
-				scales = {
-					"am_scale": 0.3,
-					"prior_scale": 0.1,
-					"tdp_scale": 0.1
-				}
-				pretrain_scales = False
-			elif isinstance(scales, dict):
-				scales = scales.copy()
-			else:
-				scales = {
-					"am_scale": 0.7,
-					"prior_scale": 0.035,
-					"tdp_scale": 0.5,
-				}
-			bw_config = bw.ScaleConfig.copy_add_bw(
-				viterbi_config, self.csp["train"],
-				num_classes=self.num_classes(),
-				**scales
-			)
-			# bw_config.config["learning_rates"] = get_learning_rates(increase=70, decay=70)
-			del bw_config.config["learning_rate"]
-			if transcription_prior:
-				self.prior_system.add_to_config(bw_config)
-			if not pretrain_scales:
-				return bw_config
-			return pretrain.PretrainConfigHolder(
-					bw_config, rel_prior_scale=0.05
-			)
-
-		def make_bw_ffnn(num_input, numpy=False, transcription_prior=True):
-			from i6_experiments.users.mann.nn.config import viterbi_ffnn, BASE_BW_LRS
-			# from i6_experiments.users.mann.nn.constants import BASE_BW_LRS
-			kwargs = BASE_BW_LRS.copy()
-			viterbi_config = viterbi_ffnn(num_input, **kwargs)
-			bw_config = bw.ScaleConfig.copy_add_bw(
-				viterbi_config, self.csp["train"],
-				am_scale=0.7,
-				prior_scale=0.35,
-				tdp_scale=0.5,
-				num_classes=self.num_classes(),
-			)
-			bw_config.config["learning_rates"] = get_learning_rates(inc_min_ratio=0.25, increase=70, decay=70)
-			if transcription_prior:
-				self.prior_system.add_to_config(bw_config)
-			return pretrain.PretrainConfigHolder(
-					bw_config, rel_prior_scale=0.5
-			)
-		
-
-		from i6_experiments.users.mann.nn.config import TINA_UPDATES_1K, TINA_NETWORK_CONFIG, TINA_UPDATES_SWB
 		self.baselines = {
 			"viterbi_lstm": lambda: viterbi_lstm(num_input),
-			"bw_lstm_fixed_prior": lambda: make_bw_lstm(num_input),
-			"bw_lstm_fixed_prior_new": lambda: make_bw_lstm(num_input, True),
-			"bw_lstm_fixed_prior_job": lambda num_frames: make_bw_lstm(num_input, num_frames),
-			"bw_lstm_povey_prior": lambda: make_bw_lstm(num_input, num_frames=None, transcription_prior=False),
-			"bw_ffnn_fixed_prior": lambda: make_bw_ffnn(num_input),
-			"bw_lstm_tina_1k": lambda: make_bw_lstm(num_input, tina=True, config_args=TINA_UPDATES_1K, network_args=TINA_NETWORK_CONFIG),
-			"bw_lstm_tina_swb": lambda: make_bw_lstm(num_input, tina=True, config_args=TINA_UPDATES_SWB, network_args=TINA_NETWORK_CONFIG),
-			"bw_tina_swb": lambda config: make_bw(num_input, base_config=config, config_args=TINA_UPDATES_SWB, scales="tina"),
-			"bw_tina_swb_povey": lambda config: make_bw(num_input, base_config=config, config_args=TINA_UPDATES_SWB, scales="tina", transcription_prior=False),
 		}
+
+		# config builders attached to the system
+		self.default_builder = ConfigBuilder(self)
+		self.builders = {}
 	
 	def _config_handling(func):
 		from inspect import signature, Parameter
@@ -1696,19 +1593,20 @@ class NNSystem(BaseSystem):
 		)
 	
 	def nn_and_recog(
-			self,
-			name,
-			*,
-			crnn_config = None, epochs=None, 
-			scorer_args=None, recognition_args=None,
-			training_args=None, compile_args=None,
-			delayed_build=Auto,
-			reestimate_prior='CRNN', optimize=True, use_tf_flow=True,
-			compile_crnn_config=None, plugin_args=None,
-			fast_bw_args={},
-			alt_training=False,
-			dump_epochs=None, dump_args=None,
-			**kwargs):
+		self,
+		name,
+		*,
+		crnn_config = None, epochs=None, 
+		scorer_args=None, recognition_args=None,
+		training_args=None, compile_args=None,
+		delayed_build=Auto,
+		reestimate_prior='CRNN', optimize=True, use_tf_flow=True,
+		compile_crnn_config=None, plugin_args=None,
+		fast_bw_args={},
+		alt_training=False,
+		dump_epochs=None, dump_args=None,
+		**kwargs
+	):
 		# experimental
 		if epochs is None:
 			epochs = self.default_epochs

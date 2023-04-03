@@ -165,7 +165,11 @@ def get_tedlium_system(
 
     system._init_am()
 
-    for args in ["default_nn_training_args", "default_scorer_args", "default_recognition_args"]:
+    for args in [
+        "default_nn_training_args",
+        "default_scorer_args",
+        "default_recognition_args"
+    ]:
         setattr(system, args, globals()[args])
     
     if mono_eow:
@@ -200,3 +204,5 @@ def get_tedlium_system(
     )
 
     return system
+
+def get():

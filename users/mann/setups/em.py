@@ -155,6 +155,7 @@ class TransitionModelMaximizer:
             out_config,
             self.returnn_python_exe,
             self.returnn_root,
+            mem_rqmt=12,
         )
 
         return task_job.out_default_file
@@ -254,11 +255,13 @@ class EmRunner:
             config.config["allow_random_model_init"] = True
         else:
             model_name = label_pos_model
-            preload.set_preload(
-                self.system,
-                config,
-                ("train_magic", model_name, self.num_subepochs),
-            )
+            # preload.set_preload(
+            #     self.system,
+            #     config,
+            #     ("train_magic", model_name, self.num_subepochs),
+            # )
+            config.config["load"] = self.system.nn_checkpoints["train_magic"][label_pos_model][self.num_subepochs],
+            config.config["load_ignore_missing_vars"] = True
         
         config = self.get_config_with_trans_model(config, trans_model)
         config = self.instantiate_fast_bw_layer(config, self.exp_config.fast_bw_args)
@@ -362,7 +365,11 @@ class EmRunner:
         }
 
         if label_pos_model:
-            l["load_on_init"] = self.system.nn_checkpoints["train_magic"][label_pos_model][self.num_subepochs]
+            l["load_on_init"] = {
+                "filename": self.system.nn_checkpoints["train_magic"][label_pos_model][self.num_subepochs],
+                # "ignore_missing": True,
+                "ignore_params_prefixes": ("tdps/",),
+            }
 
         res.config["network"]["output"]["target"] = "layer:label_weights/fast_bw"
         del res.config["network"]["output"]["loss_opts"]
