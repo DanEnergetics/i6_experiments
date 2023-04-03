@@ -4,11 +4,13 @@ from typing import Any, Union, Optional, Dict, List
 
 
 def get_recognition_args(search_type: SearchTypes, **kwargs) -> Dict:
-    return {
+    rec_args = {
         SearchTypes.AdvancedTreeSearch: get_advanced_tree_search_recognition_args,
-        SearchTypes.LabelSyncSearch: get_label_sync_search_recognition_args,
+        SearchTypes.GenericSeq2SeqSearchJob: get_generic_seq2seq_search_recognition_args,
         SearchTypes.ReturnnSearch: get_returnn_search_recognition_args,
     }[search_type](**kwargs)
+    rec_args["search_type"] = search_type
+    return rec_args
 
 
 def get_advanced_tree_search_recognition_args(
@@ -31,7 +33,7 @@ def get_advanced_tree_search_recognition_args(
 
     return {
         "epochs": epochs,
-        "feature_flow_key": "gt",
+        # "feature_flow_key": "gt",
         "prior_scales": prior_scales,
         "pronunciation_scales": pronunciation_scales,
         "lm_scales": lm_scales,
@@ -45,31 +47,35 @@ def get_advanced_tree_search_recognition_args(
             "fill_empty_segments": True,
             "best_path_algo": "bellman-ford",
         },
-        "optimize_am_lm_scale": False,
         "use_gpu": use_gpu,
         "rtf": 50,
         "mem": 8,
-        "parallelize_conversion": True,
     }
 
 
 def get_returnn_search_recognition_args(
     *,
     epochs: Optional[List[int]] = None,
+    prior_scales: Union[float, List[float]] = 0.3,
     use_gpu: bool = True,
+    log_prob_layer: str = "output",
 ) -> Dict[str, Any]:
 
+    if isinstance(prior_scales, float):
+        prior_scales = [prior_scales]
     epochs = epochs or []
 
     return {
         "epochs": epochs,
+        "prior_scales": prior_scales,
+        "log_prob_layer": log_prob_layer,
         "use_gpu": use_gpu,
         "rtf": 10,
         "mem": 8,
     }
 
 
-def get_label_sync_search_recognition_args(
+def get_generic_seq2seq_search_recognition_args(
     *,
     epochs: Optional[List[int]] = None,
     prior_scales: Union[float, List[float]] = 0.3,
@@ -100,7 +106,7 @@ def get_label_sync_search_recognition_args(
         "lookahead_options": get_lookahead_options(**kwargs),
         "eval_single_best": True,
         "eval_best_in_lattice": True,
-        "search_parameters": get_lss_search_parameters(**kwargs),
+        "search_parameters": get_seq2seq_search_parameters(**kwargs),
         "lattice_to_ctm_kwargs": {
             "fill_empty_segments": True,
             "best_path_algo": "bellman-ford",
@@ -119,7 +125,7 @@ def get_label_sync_search_recognition_args(
     }
 
 
-def get_lss_search_parameters(
+def get_seq2seq_search_parameters(
     lp: float = 22.0,
     lpl: int = 500000,
     wep: float = 0.5,
@@ -167,7 +173,7 @@ def get_lss_search_parameters(
 
 
 def get_atr_search_parameters(
-    bp: float = 22.0,
+    bp: float = 16.0,
     bpl: int = 500000,
     wep: float = 0.5,
     wepl: int = 10000,
