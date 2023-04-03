@@ -1,6 +1,4 @@
-from typing import Union, Dict, Any, Optional, List
-
-import numpy as np
+from typing import Dict, Any, Optional, List, Union
 
 import i6_core.returnn as returnn
 from i6_core.returnn import CodeWrapper
@@ -34,20 +32,9 @@ def get_extern_data_config(
     }
 
 
-def get_base_post_config(
-    num_epochs: int, save_interval: int = 10, **kwargs
-) -> Dict[str, Any]:
-    # Start saving every <save_interval> epochs after 80% of the training time.
-    first_saved_epoch = save_interval * ((num_epochs * 4) // (5 * save_interval))
-    return {
-        "cleanup_old_models": {
-            "keep_last_n": 5,
-            "keep_best_n": 5,
-            "keep": CodeWrapper(
-                f"np.arange({first_saved_epoch}, {num_epochs+1}, {save_interval})"
-            ),
-        }
-    }
+def get_base_post_config(**kwargs) -> Dict[str, Any]:
+    post_config = {"cleanup_old_models": True}
+    return post_config
 
 
 def get_network_config(network: Dict) -> Dict[str, Dict]:
@@ -55,33 +42,35 @@ def get_network_config(network: Dict) -> Dict[str, Dict]:
 
 
 def get_returnn_config(
-    network: Dict,
+    network: Optional[Dict] = None,
     *,
     target="classes",
-    num_inputs: int,
-    num_outputs: int,
-    num_epochs: int,
-    python_prolog: Optional[List] = None,
+    num_inputs: Optional[int] = None,
+    num_outputs: Optional[int] = None,
+    python_prolog: Optional[Union[List, Dict]] = None,
+    extern_data_config: bool = False,
     extra_python: Optional[List] = None,
     use_chunking: bool = True,
     extra_config: Optional[Dict] = None,
+    hash_full_python_code: bool = False,
     **kwargs,
 ) -> returnn.ReturnnConfig:
-    python_prolog = python_prolog or []
-    python_prolog.append("import numpy as np")
+    python_prolog = python_prolog or ["import numpy as np"]
     extra_python = extra_python or []
-    config_dict = {
-        "num_inputs": num_inputs,
-        "num_outputs": {target: num_outputs},
-        "target": target,
-    }
+    config_dict: dict[str, Any] = {"target": target}
+    if num_inputs is not None:
+        config_dict["num_inputs"] = num_inputs
+    if num_outputs is not None:
+        config_dict["num_outputs"] = {target: num_outputs}
+    if extern_data_config:
+        assert num_inputs and num_outputs
+        config_dict.update(get_extern_data_config(num_inputs, num_outputs, target))
     config_dict.update(get_base_config())
-    config_dict.update(get_extern_data_config(num_inputs, num_outputs, target))
-    config_dict.update(get_network_config(network))
 
-    lrate_config, lrate_python = learning_rates.get_learning_rate_config(
-        num_epochs=num_epochs, **kwargs
-    )
+    if network:
+        config_dict.update(get_network_config(network))
+
+    lrate_config, lrate_python = learning_rates.get_learning_rate_config(**kwargs)
     config_dict.update(lrate_config)
     extra_python += lrate_python
 
@@ -93,12 +82,12 @@ def get_returnn_config(
         config_dict.update(extra_config)
 
     post_config_dict = {}
-    post_config_dict.update(get_base_post_config(num_epochs=num_epochs, **kwargs))
+    post_config_dict.update(get_base_post_config(**kwargs))
 
     return returnn.ReturnnConfig(
         config=config_dict,
         post_config=post_config_dict,
-        hash_full_python_code=True,
+        hash_full_python_code=hash_full_python_code,
         python_prolog=python_prolog,
         python_epilog=extra_python,
         pprint_kwargs={"sort_dicts": False},
