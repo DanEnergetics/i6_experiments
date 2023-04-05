@@ -162,7 +162,7 @@ class ExpConfig(AbstractConfig):
 	reestimate_prior: str = None
 	dump_epochs: list = None
 	alt_training: bool = False
-	alt_decoding: Union[bool, dict] = NotSpecified
+	alt_decoding: Union[bool, dict] = False
 	compile_args: dict = None
 
 	def extend(self, **extensions):
@@ -669,49 +669,6 @@ class BaseSystem(RasrSystem):
 			graph=None, 
 			**compile_args
 		):
-		# if hasattr(crnn_config, "build_compile_config"):
-		# # if custom_compile:
-		# 	config = crnn_config.build_compile_config()
-		# if hasattr(crnn_config, "build"):
-		# # if custom_compile:
-		# 	config = crnn_config.build()
-		# else:
-		# 	config = copy.deepcopy(crnn_config)
-		# config_dict = config.config
-		# if output_tensor_name is None:
-		# 	output_tensor_name = 'output/output_batch_major'
-		# # Replace lstm unit to nativelstm2
-		# lstm_flag = False
-		# for layer in config_dict['network'].values():
-		# 	unit = layer.get('unit', None)
-		# 	if isinstance(unit, dict):
-		# 		continue
-		# 	if unit in {'lstmp'}:
-		# 		layer['unit']='nativelstm2'
-		# 		lstm_flag = True
-		# # set output to log-softmax
-		# if adjust_output_layer:
-		# 	config_dict['network'][adjust_output_layer].update({
-		# 		'class': 'linear',
-		# 		'activation': 'log_softmax'
-		# 	})
-		# 	config_dict['target'] = 'classes'
-		# config_dict['num_outputs']['classes'] = [self.num_classes(), 1]
-		# window = config_dict.get('window', 1)
-		# if window > 1:
-		# 	feature_flow = lda.add_context_flow(feature_flow, max_size=window, right=window // 2)
-
-		# if not isinstance(config_dict, crnn.ReturnnConfig):
-		# 	config_dict = crnn.ReturnnConfig(config_dict, {})
-		# compile_graph_job = crnn.CompileTFGraphJob(
-		# 	config, **compile_args
-		# )
-		# if alias is not None:
-		# 	alias = f"compile_returnn/{alias}"
-		# 	compile_graph_job.add_alias(alias)
-		# 	self.jobs["train"][alias.replace("/", "_")] = compile_graph_job
-		# 	self.compile_graphs[alias] = compile_graph_job.out_graph
-
 		if graph is None:
 			graph, lstm_flag = self.compile_model(
 				crnn_config, alias=alias,
@@ -801,56 +758,6 @@ class BaseSystem(RasrSystem):
 			tk.register_output('plot_se_%s.png' % name, train_job.plot_se)
 			tk.register_output('plot_lr_%s.png' % name, train_job.plot_lr)
 
-	def nn_dump(self, name, training_args, crnn_config, checkpoint, debug_config=False, reduced_segments=None, extra_dumps=None, dumps=Default):
-		crnn_config = copy.deepcopy(crnn_config)
-		if dumps is Default:
-			dumps = {'bw': 'fast_bw', 'ce': 'data:classes'}
-		elif dumps is None:
-			dumps = {}
-		# crnn_config['network']['dump_bw'] = {'class': 'hdf_dump', 'filename': 'bw_dumps', 'from': ['fast_bw'], 'is_output_layer': True}
-		# crnn_config['network']['dump_ce'] = {'class': 'hdf_dump', 'filename': 'ce_dumps', 'from': ['data:classes'], 'is_output_layer': True}
-		if isinstance(extra_dumps, dict):
-			dumps.update(extra_dumps)
-		for key, layer in dumps.items():
-			if layer != 'data:classes' and layer not in crnn_config['network']:
-				print(f"Warning BaseSystem.nn_dump: skip layer {layer} for dumping.")
-				continue
-			crnn_config['network'][f'dump_{key}'] = {'class': 'hdf_dump', 'filename': f'{key}_dumps', 'from': [layer], 'is_output_layer': True}
-		crnn_config['learning_rate'] = 0
-		train_args = dict(**self.default_nn_training_args)
-		train_args.update(training_args)
-		train_args.pop('extra_python', None)
-		train_args['num_epochs']  = 1
-		train_args['partition_epochs'] = {'train': 1, 'dev': 1}
-		train_args['name']        = alias = f"dump_{name}"
-		train_args['crnn_config'] = crnn_config
-		if debug_config:
-			crnn_config["max_seqs"] = crnn_config["start_epoch"] = 1
-		if reduced_segments: 
-			overlay_name = 'crnn_train_dump'
-			if not overlay_name in self.csp:
-				self.add_overlay('crnn_train', overlay_name)
-				self.csp[overlay_name].concurrent   = 1
-				self.csp[overlay_name].segment_path = self.default_reduced_segment_path
-			if isinstance(reduced_segments, (str, tk.Path)):
-				self.csp[overlay_name].segment_path = reduced_segments
-			train_args['train_corpus'] = 'crnn_train_dump'
-		if checkpoint is not None:
-			ts, cs = helpers.get_continued_training(
-					system=self,
-					training_args=train_args,
-					base_config=crnn_config,
-					lr_continuation=0,
-					base_training=checkpoint,
-					copy_mode='preload'
-			)
-			train_args.update(**ts)
-			train_args['crnn_config'] = cs
-		self.train_nn(**train_args)
-		j = self.jobs[train_args['feature_corpus']]['train_nn_%s' % alias]
-		j.add_alias('nn_%s' % alias)
-		tk.register_output('dump_nn_{}_learning_rates'.format(name), j.learning_rates)
-
 	def nn_and_recog(
 		self, name, training_args, crnn_config, scorer_args,  
 		recognition_args,
@@ -860,7 +767,7 @@ class BaseSystem(RasrSystem):
 		optimize=True, use_tf_flow=False,
 		alt_training=False, dump_epochs=None,
 		compile_crnn_config=None,
-		alt_decoding=NotSpecified,
+		alt_decoding=False,
 		train_prefix=None,
 	):
 		if compile_args is None:
@@ -900,9 +807,9 @@ class BaseSystem(RasrSystem):
 				self.decode(_adjust_train_args=False, **kwargs)
 
 			# alternative decoding procedure
-			if alt_decoding is NotSpecified:
+			if not alt_decoding:
 				return
-			if isinstance(alt_decoding, bool):
+			if isinstance(alt_decoding, bool) and alt_decoding:
 				alt_decoding = {}
 			alt_decoding_epochs = alt_decoding.pop("epochs", epochs)
 			for epoch in alt_decoding_epochs:
@@ -1191,61 +1098,6 @@ class BaseSystem(RasrSystem):
 		tse.add_alias(f"tse-{name}")
 		tk.register_output("stats_align/tse/{}".format(name), tse.out_tse)
 		return stats
-
-
-	def run(self, steps='all'):
-		if steps == 'all':
-			steps = {'init', 'custom', 'nn_init'}
-
-		if 'init' in steps:
-			self.init_corpora()
-			self.init_am(**self.am_args)
-			self.init_lm(**self.lm_args)
-			self.init_lexica(**self.lexica_args)
-			self.init_cart_questions(**self.cart_args)
-			self.set_initial_system()
-			self.set_scorer()
-			self.store_allophones('train')
-			for c in self.subcorpus_mapping.keys():
-				self.costa(c, **self.costa_args)
-			self.extract_features()
-
-		if 'custom' in steps:
-			self.init_corpora()
-			self.init_am(**self.am_args)
-			self.init_lm(**self.lm_args)
-			self.init_lexica(**self.lexica_args)
-			for c, v in self.subcorpus_mapping.items():
-				self.set_initial_system(corpus=c, 
-								feature=self.feature_mappings[v], 
-								alignment=self.alignment[v],
-								prior_mixture=self.default_mixture_path,
-								cart=self.default_cart_file,
-								allophones=self.default_allophones_file)
-			self.set_scorer()
-			for c in self.subcorpus_mapping.keys():
-				self.costa(c, **self.costa_args)
-		
-		if 'custom_mono' in steps:
-			self.init_corpora()
-			self.init_am(**self.am_args)
-			self.init_lm(**self.lm_args)
-			self.init_lexica(**self.lexica_args)
-			for c, v in self.subcorpus_mapping.items():
-				self.set_initial_system(corpus=c, 
-								feature=self.feature_mappings[v], 
-								alignment=self.alignment[v],
-								prior_mixture=self.default_mono_mixture_path,
-								cart=self.default_cart_file,
-								allophones=self.default_allophones_file,
-								state_tying='mono',
-								feature_flow=self.default_feature_flow)
-			self.set_scorer()
-			for c in self.subcorpus_mapping.keys():
-				self.costa(c, **self.costa_args)
-
-		if 'nn_init' in steps:
-			self.init_nn(**self.init_nn_args)
 
 from i6_experiments.users.mann.experimental.sequence_training import add_bw_layer, add_bw_output, add_fastbw_configs
 from i6_experiments.users.mann.experimental.util import safe_crp
@@ -1706,102 +1558,3 @@ class NNSystem(BaseSystem):
 			for plugin, args in plugin_args.items():
 				self.plugins[plugin].apply(**args)
 			return super().nn_align(nn_name, crnn_config, epoch, compile_crnn_config=compile_crnn_config, **kwargs)
-
-	@_config_handling
-	def nn_dump(self, name, training_args, crnn_config, plugin_args=None, *args, **kwargs):
-		plugin_args = plugin_args or {}
-		if crnn_config is None:
-			crnn_config = self.nn_config_dicts['train'][name]
-		crnn_config = copy.deepcopy(crnn_config)
-		if "extra_python" in crnn_config:
-			training_args['extra_python'] = crnn_config.pop('extra_python')
-		if "extra_python" in crnn_config:
-			training_args['extra_python'] = crnn_config.pop('extra_python')
-		with safe_crp(self) as tcsp:
-			if 'transition_probabilities' in training_args:
-				self.tdps.set(training_args.pop('transition_probabilities'), corpus='train')
-			for plugin, pargs in plugin_args.items():
-				self.plugins[plugin].apply(**pargs)
-			if any(layer['class'] == 'fast_bw' for layer in crnn_config['network'].values()) \
-				and 'additional_sprint_config_files' not in training_args:
-				additional_sprint_config_files, additional_sprint_post_config_files = add_fastbw_configs(self.csp['train']) # TODO: corpus dependent and training args
-				training_args = {
-					**training_args,
-					'additional_sprint_config_files':      additional_sprint_config_files,
-					'additional_sprint_post_config_files': additional_sprint_post_config_files,
-				}
-			return super().nn_dump(name, training_args, crnn_config, *args, **kwargs)
-
-	
-	def run(self, steps="all", init_only=False):
-		super().run(steps)
-		if "init_bw" in steps:
-			print("Run init_bw")
-			additional_sprint_config_files, additional_sprint_post_config_files = add_fastbw_configs(self.csp['train']) # TODO: corpus dependent and training args
-			self.default_bw_training_args = {
-				"additional_sprint_config_files": additional_sprint_config_files,
-				"additional_sprint_post_config_files": additional_sprint_post_config_files
-			}
-
-		if "baseline_bw_tcnn" in steps:
-			name = "baseline_bw_tcnn"
-			print("Run " + name)
-			kwargs = {**self.base_crnn_config, **self.base_tcnn_config}
-			self.init_tcnn(name, **kwargs)
-			self.add_bw_layer(name, **self.base_bw_args)
-			self.add_pretrain(name, **self.base_pretrain_args)
-			if not init_only:
-				self.nn_and_recog(
-					name=name,
-					# training_args=self.default_nn_training_args,
-					crnn_config=self.nn_config_dicts['train'][name],
-					scorer_args={}, recognition_args={}, epochs=self.default_epochs,
-				)
-		
-		if "baseline_bw_ffnn" in steps:
-			name = "baseline_bw_ffnn"
-			print("Run "+ name)
-			kwargs = {**self.base_crnn_config, **self.base_ffnn_config}
-			self.init_ffnn(name, **kwargs)
-			self.add_bw_layer(name, **self.base_bw_args)
-			self.add_pretrain(name, **self.base_pretrain_args)
-			if not init_only:
-				self.nn_and_recog(
-					name=name,
-					# training_args=self.default_bw_training_args,
-					crnn_config=self.nn_config_dicts['train'][name],
-					scorer_args={}, recognition_args={}, epochs=self.default_epochs,
-				)
-			
-		if "baseline_viterbi_ffnn" in steps:
-			name = "baseline_viterbi_ffnn"
-			print("Run "+ name)
-			kwargs = {
-				**self.base_crnn_config,
-				**self.base_ffnn_config,
-				**self.base_viterbi_args}
-			self.init_ffnn(name, **kwargs)
-			print("Hi")
-			if not init_only:
-				self.nn_and_recog(
-					name=name,
-					# training_args=self.default_nn_training_args,
-					crnn_config=self.nn_config_dicts['train'][name],
-					scorer_args={}, recognition_args={}, epochs=self.default_epochs,
-				)
-
-		if "baseline_viterbi_lstm" in steps:
-			name = "baseline_viterbi_lstm"
-			print("Run "+ name)
-			kwargs = {
-				**self.base_crnn_config,
-				**self.base_lstm_config,
-				**self.base_viterbi_args}
-			self.init_lstm(name, **kwargs)
-			if not init_only:
-				self.nn_and_recog(
-					name=name,
-					# training_args=self.default_nn_training_args,
-					crnn_config=self.nn_config_dicts['train'][name],
-					scorer_args={}, recognition_args={}, epochs=self.default_epochs,
-				)

@@ -4,18 +4,12 @@ import os, sys
 import copy
 import itertools
 
-from recipe.i6_experiments.users.mann.setups.nn_system.base_system import NNSystem, ExpConfig, ConfigBuilder, RecognitionConfig
-import recipe.i6_experiments.users.mann.setups.nn_system.switchboard as swb
-import recipe.i6_experiments.users.mann.setups.nn_system.common as common
-from i6_experiments.users.mann.setups.reports import TableReport
-from recipe.i6_experiments.users.mann.setups import prior
-from i6_experiments.users.mann.nn import specaugment, learning_rates
-from recipe.i6_experiments.common.datasets import librispeech
-
-from recipe.i6_experiments.common.setups.rasr.util import RasrDataInput
-from recipe.i6_experiments.common.setups.rasr import RasrSystem
 from i6_core import rasr
-from recipe.i6_core import tools
+from i6_core import tools
+
+from i6_experiments.users.mann.setups.nn_system.base_system import ExpConfig, RecognitionConfig
+from i6_experiments.users.mann.setups.tdps import CombinedModel
+from i6_experiments.users.mann.setups.nn_system import common
 
 sys.setrecursionlimit(2500)
 
@@ -29,11 +23,12 @@ swb_system = common.init_system(
         use_boundary_classes=False,
         use_word_end_classes=True,
     ),
+    custom_args=dict(
+        legacy=False,
+    ),
     extract_features=True,
 )
 
-from recipe.i6_experiments.users.mann.setups.tdps import CombinedModel, SimpleTransitionModel
-from i6_core import rasr
 
 #---------------------------------- tinas baseline ------------------------------------------------
 
@@ -62,10 +57,6 @@ clone_returnn_job = tools.git.CloneGitRepositoryJob(
 
 clone_returnn_job.add_alias("returnn_tdp_training")
 RETURNN_TDPS = clone_returnn_job.out_repository
-
-from recipe.i6_experiments.users.mann.nn import preload, tdps
-
-#------------------------------------- updated experiments ----------------------------------------
 
 PRIOR_MODEL_TINA = CombinedModel.from_fwd_probs(3/9, 1/40, 0.0)
 default_recognition_args = RecognitionConfig(
