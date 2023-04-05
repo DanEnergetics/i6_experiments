@@ -1480,7 +1480,10 @@ class ConfigBuilder:
 class NNSystem(BaseSystem):
 	def __init__(self, num_input=None, epochs=None, rasr_binary_path=Default, **kwargs):
 		if rasr_binary_path is Default:
-			rasr_binary_path = tk.Path(gs.RASR_ROOT).join_right('arch/linux-x86_64-standard')
+			p = gs.RASR_ROOT
+			if isinstance(p, str):
+				p = tk.Path(p)
+			rasr_binary_path = p.join_right('arch/linux-x86_64-standard')
 		super().__init__(rasr_binary_path, **kwargs)
 
 		assert num_input and epochs

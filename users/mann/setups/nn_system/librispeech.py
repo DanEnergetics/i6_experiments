@@ -126,6 +126,42 @@ TOTAL_FRAMES_1K = 330216469
 # import paths
 default_reduced_segment_path = '/work/asr3/michel/mann/misc/tmp/reduced.train.segments'
 
+extend_train_corpus_args = {
+    "corpus_name": "librispeech",
+    "legacy_trainer": True,
+}
+
+def get_prior_args():
+    return {
+        "total_frames": TOTAL_FRAMES_1K,
+        "eps": 1e-6,
+    }
+
+def get_init_args():
+    corpus_object_dict = librispeech.get_corpus_object_dict()
+    lm_dict = librispeech.get_arpa_lm_dict()
+    lexicon_dict = librispeech.get_g2p_augmented_bliss_lexicon_dict()
+
+    lm_config = {
+        "filename": lm_dict["4gram"],
+        "type": "ARPA",
+        "scale": 5.0
+    }
+
+    lexicon_config = {
+        "filename": lexicon_dict["train-clean-960"],
+        "normalize_pronunciation": False
+    }
+
+    rasr_data_input_dict = dict()
+    for name, crp_obj in corpus_object_dict.items():
+        rasr_data_input_dict[name] = RasrDataInput(
+            crp_obj,
+            lexicon_config,
+            concurrent=librispeech.constants.concurrent[name]
+        )
+
+
 def get_librispeech_system():
     """Under construction. Do not use for training yet!"""
     corpus_object_dict = librispeech.get_corpus_object_dict()
@@ -281,11 +317,11 @@ def custom_recog_tdps():
     )
     return recog_extra_config
 
-# def init_segment_order_shuffle(system, chunk_size=1000):
-#     system.csp["crnn_train"] = copy.deepcopy(system.csp["crnn_train"])
-#     system.csp["crnn_train"].corpus_config.segment_order_shuffle = True
-#     system.csp["crnn_train"].corpus_config.segment_order_sort_by_time_length = True
-#     system.csp["crnn_train"].corpus_config.segment_order_sort_by_time_length_chunk_size = chunk_size
+def get():
+    return get_libri_1k_system()
+
+def add_extra_dev_corpus(system):
+    pass
 
 def init_extended_train_corpus(system, reinit_shuffle=True):
     overlay_name = "train_magic"
@@ -326,8 +362,8 @@ def init_extended_train_corpus(system, reinit_shuffle=True):
             chunk_size = reinit_shuffle
         init_segment_order_shuffle(system, "returnn_train_magic", 300)
     
-    from i6_experiments.users.mann.setups.nn_system.trainer import RasrTrainer
-    system.set_trainer(RasrTrainer())
+    from i6_experiments.users.mann.setups.nn_system.trainer import RasrTrainerLegacy
+    system.set_trainer(RasrTrainerLegacy())
 
     return {
         "feature_corpus": "train_magic",

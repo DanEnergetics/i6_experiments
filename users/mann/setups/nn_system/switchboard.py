@@ -12,17 +12,23 @@ from recipe.i6_core import returnn
 from recipe.i6_core import meta
 
 from recipe.i6_experiments.common.setups.rasr.util import RasrDataInput, RasrInitArgs
+from i6_experiments.common.tools.sctk import compile_sctk
 from .common import (
     init_segment_order_shuffle,
     init_extended_train_corpus,
+    init_env,
+    init_binaries,
     Binaries,
+    RETURNN_PYTHON_EXE,
+    RETURNN_PYTHON_HOME,
+    compile_rasr_binaries,
 )
 
 init_nn_args = {
-    'name': 'crnn',
+    'name': 'returnn',
     'corpus': 'train',
-    'dev_size': 0.05,
-    'alignment_logs': True,
+    'dev_size': 1.2e-5,
+    'alignment_logs': None,
 }
 
 default_nn_training_args = {
@@ -103,9 +109,99 @@ default_feature_paths = {
     'dev'  : PREFIX_PATH + "features/extraction/FeatureExtraction.Gammatone.dVkMNkHYPXb4/output/gt.cache.bundle",
     'eval' : PREFIX_PATH + "features/extraction/FeatureExtraction.Gammatone.O4lUG0y7lrKt/output/gt.cache.bundle",
     "dev_extra": "/work/asr4/raissi/ms-thesis-setups/lm-sa-swb/dependencies/cv-from-hub5-00/features/gammatones/FeatureExtraction.Gammatone.pp9W8m2Z8mHU/output/gt.cache.bundle",
+    'hub5e00': PREFIX_PATH + "features/extraction/FeatureExtraction.Gammatone.dVkMNkHYPXb4/output/gt.cache.bundle",
+    'hub5e01': PREFIX_PATH + "features/extraction/FeatureExtraction.Gammatone.O4lUG0y7lrKt/output/gt.cache.bundle",
 }
 
+def extract_features(system):
+    from i6_experiments.users.jxu.experiments.gmm_michel.baseline_args_v5 import get_init_args
+    system.rasr_binary_path.hash_overwrite = "SWITCHBOARD_DEFAULT_RASR_BINARY_PATH"
+    init_args = get_init_args()
+    for corpus in system.crp.keys():
+        if corpus == "base": continue
+        system.gt_features(corpus, **init_args.feature_extraction_args["gt"])
+
+def get_train_corpus_object():
+    from i6_experiments.common.datasets.switchboard import (
+        get_train_bliss_corpus_ldc,
+    )
+
+    corpus_file = get_train_bliss_corpus_ldc()
+    return None
+
+
+def get_init_args():
+    from i6_experiments.common.datasets.switchboard import (
+        get_hub5e00,
+        get_hub5e01,
+        # get_train_corpus_object_ldc,
+        get_train_corpus_object_ldc,
+        get_bliss_lexicon,
+        constants,
+        corpus_eval,
+    )
+
+    CONCURRENT = {
+        **constants.concurrent,
+        "hub5e00": 10,
+    }
+
+    corpus_obj_dict = {
+        "train": get_train_corpus_object_ldc(),
+        "hub5e01": corpus_eval.get_hub5e01_corpus_object(),
+        "hub5e00": corpus_eval.get_hub5e00_corpus_object(),
+    }
+
+    eval_datasets = {
+        "hub5e01": get_hub5e01(),
+        "hub5e00": get_hub5e00(),
+    }
+
+    lexicon_config = {
+        "filename": get_bliss_lexicon(),
+        "normalize_pronunciation": False,
+    }
+
+    lm_config = {
+        "filename": tk.Path(
+            "/home/tuske/work/ASR/switchboard/corpus/lm/data/mylm/swb.fsh.4gr.voc30k.LM.gz",
+            cached=True, 
+        ),
+        "type": "ARPA",
+        "scale": 3.0,
+    }
+
+    rasr_data_input_dict = dict()
+    for name, crp_obj in corpus_obj_dict.items():
+        stm = None
+        glm = None
+        if name in eval_datasets:
+            stm = eval_datasets[name].stm
+            glm = eval_datasets[name].glm
+
+        rasr_data_input_dict[name] = RasrDataInput(
+            corpus_object=crp_obj,
+            lexicon=lexicon_config,
+            concurrent=CONCURRENT[name],
+            lm=lm_config,
+            stm=stm, glm=glm,
+        )
+    return rasr_data_input_dict
+
 SCTK_PATH = Path('/u/beck/programs/sctk-2.4.0/bin/')
+
+SCTK_BINARY_PATH = compile_sctk()
+SCTK_BINARY_PATH.hash_overwrite = "SCTK_BINARY_PATH"
+
+def get_rasr_init_args():
+    return RasrInitArgs(
+        am_args=None,
+        costa_args=None,
+        feature_extraction_args=None,
+        scorer="hub5",
+        scorer_args={"sctk_binary_path": SCTK_BINARY_PATH},
+    )
+
 
 TOTAL_FRAMES = 91_026_136
 
@@ -117,12 +213,21 @@ def get_prior_args():
 
 CORPUS_NAME = "switchboard-1"
 
+extend_train_corpus_args = {
+    "corpus_name": CORPUS_NAME,
+    "cv_source_corpus": "dev_zhou",
+    "legacy_trainer": True,
+}
+
 import enum
 class BinarySetup(enum.Enum):
     Download = 0
     Legacy = 1
 
-def get_legacy_switchboard_system(binaries: BinarySetup=BinarySetup.Download):
+def get_legacy_switchboard_system(
+    binaries: BinarySetup=BinarySetup.Download,
+    legacy_corpus: bool=True,
+):
     """Returns the an NNSystem for the legacy switchboard corpus setup."""
     # setup binaries and environment
     epochs = [12, 24, 32, 80, 160, 240, 320]
@@ -134,10 +239,18 @@ def get_legacy_switchboard_system(binaries: BinarySetup=BinarySetup.Download):
     subcorpus_mapping = { 'train': 'full', 'dev': 'dev_zoltan', 'eval': 'hub5-01'}
     train_eval_mapping = { 'train': 'train', 'dev': 'eval', 'eval': 'eval'}
 
+    # if not isinstance(gs.RASR_ROOT, tk.Path):
+    #     gs.RASR_ROOT = tk.Path(gs.RASR_ROOT)
+    # gs.RASR_ROOT.hash_overwrite = "SWITCHBOARD_DEFAULT_RASR_BINARY_PATH"
+
     system = NNSystem(
         num_input=40,
         epochs=epochs,
+        # rasr_binary_path=binaries.rasr,
         native_ops_path=binaries.native_lstm,
+        # returnn_python_exe=RETURNN_PYTHON_EXE,
+        # returnn_python_home=RETURNN_PYTHON_HOME,
+        # returnn_root=binaries.returnn,
     )
 
     system.rasr_init_args = RasrInitArgs(
@@ -197,6 +310,64 @@ def get_legacy_switchboard_system(binaries: BinarySetup=BinarySetup.Download):
     system.plugins["filter_alignment"] = FilterAlignmentPlugin(system, **init_nn_args)
     return system
 
+def get_switchboard_system():
+    init_env()
+    binaries = init_binaries(
+        rasr_branch="factored-hybrid-dev",
+        # rasr_commit="d506533"
+    )
+    # _tmp_rasr_root = Path("/u/raissi/dev/master-rasr-fsa").join_right("arch/linux-x86_64-standard")
+    _tmp_rasr_root = compile_rasr_binaries()
+    binaries = binaries._replace(rasr=_tmp_rasr_root)
+    # binaries.rasr.hash_overwrite = "FACTORED_HYBRID_RASR_BINARY_PATH"
+    binaries.rasr.hash_overwrite = "SWITCHBOARD_DEFAULT_RASR_BINARY_PATH"
+    init_args = get_init_args()
+
+    epochs=[12, 24, 48, 120, 240, 300]
+
+    system = NNSystem(
+        num_input=40,
+        epochs=epochs,
+        rasr_binary_path=binaries.rasr,
+        native_ops_path=binaries.native_lstm,
+        returnn_python_exe=RETURNN_PYTHON_EXE,
+        returnn_python_home=RETURNN_PYTHON_HOME,
+        returnn_root=binaries.returnn,
+    )
+
+    system.dev_corpora = ["dev", "eval"]
+    system.rasr_init_args = get_rasr_init_args()
+
+    subcorpus_mapping = {
+        "train": "train",
+        "hub5e00": "dev",
+        "hub5e01": "eval",
+    }
+
+    for subcorpus_name, corpus_data_input in init_args.items():
+        corpus_key = subcorpus_mapping[subcorpus_name]
+        if corpus_key == "test": continue
+        system.add_corpus(corpus_key, corpus_data_input, add_lm=(corpus_key != "train"))
+        feature_path = Path(default_feature_paths[corpus_key], cached=True)
+        feature_flow = 'gt'
+        system.feature_flows[corpus_key][feature_flow] = features.basic_cache_flow(feature_path)
+        system.feature_bundles[corpus_key][feature_flow] = feature_path
+        # system.set_sclite_scorer()
+    
+    system.prepare_scoring()
+
+    system._init_am()
+
+    for args in [
+        "default_nn_training_args",
+        "default_scorer_args",
+        "default_recognition_args"
+    ]:
+        setattr(system, args, globals()[args])
+    
+    return system
+
+
 def init_prior_system(system):
     system.prior_system = prior.PriorSystem(system, TOTAL_FRAMES)
 
@@ -236,15 +407,9 @@ def get_bw_switchboard_system():
     system.default_nn_training_args["num_epochs"] = 300
     return system
 
-def get():
-    res = get_bw_switchboard_system()
+def get(legacy=True):
+    res = get_bw_switchboard_system() if legacy else get_switchboard_system()
     add_zhou_corpus(res)
-
-    init_extended_train_corpus(
-        res, CORPUS_NAME,
-        cv_source_corpus="dev_zhou",
-        legacy_trainer=True,
-    )
 
     res.init_dump_system(
         segments=[

@@ -65,8 +65,8 @@ TDP_SCALES = [0.1, 0.2, 0.3, 0.5, 0.7, 1.0]
 TDP_REDUCED = [0.1, 0.5, 1.0]
 PRIOR_SCALES = [0.1, 0.3, 0.5, 0.7]
 
-from i6_experiments.users.mann.experimental.tuning import RecognitionTuner
-tuner = RecognitionTuner(swb_system)
+from i6_experiments.users.mann.experimental.tuning import RecognitionTuner, FactoredHybridTuner
+tuner = RecognitionTuner(swb_system) #, tdp_scales=[0.1], prior_scales=[0.1])
 
 #---------------------------------- tinas baseline ------------------------------------------------
 
@@ -204,10 +204,12 @@ for tdp, prior in itertools.product(TDP_SCALES, PRIOR_SCALES):
     )
 
 tuner.tune(
-    name='baseline_tina.no_tying-tune_scales-tdp_{}-prior_{}'.format(tdp, prior),
-    crnn_config=builder.build(),
+    name='baseline_tina.no_tying',
+    epoch=300,
+    returnn_config=builder.build(),
     recognition_config=RecognitionConfig(lm_scale=3.0, tdps=CombinedModel.legacy()),
     exp_config=exp_config,
+    prior_suffix=False,
 )
 
 tdp, prior = 0.2, 0.7
@@ -252,6 +254,8 @@ new_exp_config = exp_config.extend(
     reestimate_prior="transcription"
 )
 
+epoch_mapping = {"blstm": 300, "label": 240}
+tunings = {}
 
 for arch in ["label", "ffnn", "blstm", "blstm_no_label"]:
     tmp_config = copy.deepcopy(baseline_prior_less)
@@ -262,11 +266,33 @@ for arch in ["label", "ffnn", "blstm", "blstm_no_label"]:
         exp_config=new_exp_config,
     )
 
-    if arch != "blstm":
+    if arch not in {"blstm", "label"}:
         continue
 
-    
+    # tuner.tdp_scales = tuner.prior_scales = [0.1]
+    if arch == "blstm":
+        tune_func = tuner.tune
+    else:
+        tune_func = tuner.tune_async
+        # continue
+    tunings[arch] = tune_func(
+        name="baseline_tdps.no-prior-{}".format(arch),
+        epoch=epoch_mapping[arch],
+        returnn_config=tmp_config,
+        exp_config=new_exp_config,
+        recognition_config=RecognitionConfig(
+            tdps=CombinedModel.legacy(),
+            beam_pruning=22.0,
+            beam_pruning_threshold=500000,
+            lm_scale=3.0,
+        ),
+        optimum=(0.2, 0.5) if arch == "blstm" else "async",
+    )
+
+    continue
+
     for tdp, prior in itertools.product(TDP_SCALES, PRIOR_SCALES):
+    # for tdp, prior in itertools.product([0.2], [0.5]):
         swb_system.run_exp(
             name='baseline_tina.no-prior-{}-tune_scales-tdp_{}-prior_{}'.format(arch, tdp, prior),
             crnn_config=tmp_config,
@@ -280,10 +306,12 @@ for arch in ["label", "ffnn", "blstm", "blstm_no_label"]:
                             prior_scale=prior,
                             altas=2.0,
                             beam_pruning=16).to_dict(),
-                    ).replace(epochs=[300],)
+                    ).replace(epochs=[300 if arch == "blstm" else 240],)
             ), 
             optimize=False,
         )
+    
+    if arch == "label": continue
 
     tdp, prior = 0.2, 0.5
     swb_system.run_exp(
@@ -312,44 +340,9 @@ from recipe.i6_experiments.users.raissi.setups.librispeech.search.factored_hybri
 from i6_core.mm import CreateDummyMixturesJob
 
 EPS = 5e-6
-
 recog_prior = copy.deepcopy(swb_system.prior_system)
 recog_prior.eps = EPS
 recog_prior.extract_prior()
-
-print({
-    k for k in swb_system.jobs["train"] if k.startswith("compile_returnn")
-})
-
-base = "baseline_tina.no_tying"
-decoder = FHDecoder(
-    name=base,
-    search_crp=swb_system.crp["dev"],
-    context_type=ContextEnum.monophone,
-    context_mapper=ContextMapper(),
-    feature_path=swb_system.feature_flows["dev"]["gt"],
-    model_path=swb_system.nn_checkpoints["train"][base][12],
-    graph=swb_system.jobs["train"]["compile_returnn_{}".format(base)].out_graph,
-    mixtures=CreateDummyMixturesJob(swb_system.num_classes(), swb_system.num_input).out_mixtures,
-    eval_files=swb_system.scorer_args["dev"],
-    tensor_mapping=FHDecoder.TensorMapping(center_state_posteriors="output")
-)
-
-# decoder = FHDecoder(
-#     name="fh_decoder",
-#     search_crp=swb_system.crp["dev"],
-#     context_type=ContextEnum.mono_state_transition,
-#     context_mapper=ContextMapper(),
-#     feature_path=swb_system.feature_flows["dev"]["gt"],
-#     model_path=swb_system.nn_checkpoints["train"]["baseline_tina.no-tying"][12],
-#     graph=swb_system.jobs["train"]["compile_returnn_baseline_tina.no-tying"].out_graph,
-#     mixtures=swb_system.mixtures["train"],
-#     eval_files=swb_system.scorer_args["dev"],
-#     tensor_mapping=FHDecoder.TensorMapping(center_state_posteriors="output")
-# )
-
-print(decoder.featureScorerConfig)
-
 
 priorInfo={
     "center-state-prior": {"file": recog_prior.prior_xml_file, "scale": 0.7},
@@ -357,79 +350,59 @@ priorInfo={
     "right-context-prior": {"file": None},
 }
 
-feature_scorer = get_feature_scorer(
-    context_type=ContextEnum.monophone,
-    context_mapper=ContextMapper(),
-    featureScorerConfig=decoder.featureScorerConfig,
-    # mixtures=swb_system.mixtures["train"],
-    mixtures=CreateDummyMixturesJob(311469, swb_system.num_input).out_mixtures,
-    silence_id=swb_system.silence_idx(),
-    prior_info=priorInfo,
-)
-
-# extra_config = rasr.RasrConfig()
-
-# extra_config["flf-lattice-tool.network.recognizer.acoustic-model"] = CombinedModel.legacy().to_acoustic_model_config()
-
-RETURNN_PYTHON_HOME = tk.Path("/work/tools/asr/python/3.8.0")
-lib_subdir = "lib/python3.8/site-packages"
-libs = ["numpy/.libs"]
-path_buffer = ""
-for lib in libs:
-    path_buffer += ":" + RETURNN_PYTHON_HOME.join_right(lib_subdir).join_right(lib) 
-gs.DEFAULT_ENVIRONMENT_SET["LD_LIBRARY_PATH"] += path_buffer
-
 from i6_experiments.users.mann.setups.nn_system.factored_hybrid import FactoredHybridDecoder, TransitionType
 
-swb_system.set_decoder(
-    FactoredHybridDecoder(default_decoding_args={"prior_info": priorInfo})
-)
+swb_system.set_decoder("fh", FactoredHybridDecoder(default_decoding_args={"prior_info": priorInfo}))
 
 compile_config = swb_system.baselines["viterbi_lstm"]()
 compile_config.config["network"]["encoder_output"] = {"class": "copy", "from": ["fwd_6", "bwd_6"], "is_output_layer": True}
 
 
 base = "baseline_tina.no_tying"
-swb_system.decoder.decode(
+swb_system.run_decode(
     name=base,
     recog_name=base + ".fh.new",
     epoch=120,
+    type="fh",
     compile_args={
         "adjust_output_layer": False,
     },
-    **new_exp_config.extend(
+    exp_config=new_exp_config.extend(
         recognition_args={
-            "feature_scorer": feature_scorer,
-            "flow": decoder.featureScorerFlow,
+            # "feature_scorer": feature_scorer,
+            # "flow": decoder.featureScorerFlow,
             "lm_scale": 3.0,
             # "extra_config": extra_config,
         },
+        scorer_args={"prior_file": recog_prior.prior_xml_file},
     ).replace(
         compile_crnn_config=compile_config,
         reestimate_prior=False,
-    ).to_dict(),
+    )
 )
 
 base = "baseline_tdps.no-prior-blstm"
-swb_system.decoder.decode(
+swb_system.run_decode(
     name=base,
     recog_name=base + ".fh.new",
     epoch=48,
+    type="fh",
     compile_args={
         "adjust_output_layer": False,
     },
     decoding_args={
         "context_type": ContextEnum.monophone,
     },
-    **new_exp_config.extend(
+    exp_config=new_exp_config.extend(
         recognition_args={
             "lm_scale": 3.0,
             # "extra_config": extra_config,
         },
+        scorer_args={"prior_file": recog_prior.prior_xml_file},
     ).replace(
         compile_crnn_config=compile_config,
         reestimate_prior=False,
-    ).to_dict(),
+    )
 )
 
 
@@ -440,11 +413,16 @@ type_map = {"blstm": TransitionType.feature, "label": TransitionType.label}
 
 swb_system.crp["dev"].flf_tool_exe = "/u/raissi/dev/master-rasr-fsa/src/Tools/Flf/flf-tool.linux-x86_64-standard"
 
+fh_tuner = FactoredHybridTuner(
+    swb_system,
+    base_config=RecognitionConfig(altas=2.0),
+)
+
+epoch_selection = {"blstm": 300, "label": 240}
+
 for arch in archs:
     name="baseline_tdps.no-prior-{}".format(arch)
     compile_config = copy.deepcopy(swb_system.nn_config_dicts["train"][name])
-    print(name)
-    print(compile_config.config["network"]["tdps"])
     compile_config.config["network"]["encoder_output"] = {"class": "copy", "from": ["fwd_6", "bwd_6"], "is_output_layer": True}
     decoding_args = {}
     if arch == "blstm":
@@ -466,121 +444,42 @@ for arch in archs:
                     "lm_scale": 3.0,
                     # "extra_config": extra_config,
                 },
+                scorer_args={"prior_file": recog_prior.prior_xml_file},
             ).replace(
                 compile_crnn_config=compile_config,
                 reestimate_prior=False,
             ).to_dict()
         )
     
-    if arch != "blstm":
+    if arch not in {"blstm", "label"}:
         continue
-    
-    for tdp, fwd_loop, prior in itertools.product(TDP_SCALES, TDP_REDUCED, PRIOR_SCALES):
-        prior_info_tune = copy.deepcopy(priorInfo)
-        prior_info_tune["center-state-prior"]["scale"] = prior
 
-        decoding_args["prior_info"] = prior_info_tune
-
-        swb_system.decoder.decode(
-            name=name,
-            recog_name=name + ".fh-tune_scales-fwd_loop-{}_tdp-{}_prior-{}".format(fwd_loop, tdp, prior),
-            epoch=epoch,
-            decoding_args={
-                "context_type": ContextEnum.mono_state_transition,
-                "transition_type": type_map[arch],
-                **decoding_args,
-            },
-            optimize=False,
-            **new_exp_config.extend(
-                recognition_args=RecognitionConfig(
-                    lm_scale=3.0,
-                    tdps=CombinedModel.legacy(),
-                    altas=2.0,
-                    tdp_scale=tdp,
-                ).to_dict(),
-                scorer_args={
-                    "forward_scale": fwd_loop,
-                    "loop_scale": fwd_loop},
-            ).replace(
-                compile_crnn_config=compile_config,
-                reestimate_prior=False,
-            ).to_dict(),
-        )
-    
-    tdp, fwd_loop, prior = 0.2, 0.5, 0.5
-        
-    prior_info_tune = copy.deepcopy(priorInfo)
-    prior_info_tune["center-state-prior"]["scale"] = prior
-
-    decoding_args["prior_info"] = prior_info_tune
-
-    swb_system.decoder.decode(
+    tuning = fh_tuner.tune_async(
         name=name,
-        recog_name=name + ".fh-tuned",
-        epoch=epoch,
+        epoch=epoch_selection[arch],
         decoding_args={
             "context_type": ContextEnum.mono_state_transition,
             "transition_type": type_map[arch],
+            "prior_info": priorInfo,
             **decoding_args,
         },
-        **new_exp_config.extend(
-            recognition_args=RecognitionConfig(
-                beam_pruning=22.0,
-                beam_pruning_threshold=500000,
-                lm_scale=3.0,
-                tdps=CombinedModel.legacy(),
-                tdp_scale=tdp,
-            ).to_dict(),
-            scorer_args={
-                "forward_scale": fwd_loop,
-                "loop_scale": fwd_loop},
-        ).replace(
+        recognition_config=RecognitionConfig(
+            lm_scale=3.0,
+            tdps=CombinedModel.legacy(),
+        ),
+        exp_config=new_exp_config.replace(
             compile_crnn_config=compile_config,
             reestimate_prior=False,
-        ).to_dict(),
+            scorer_args={"prior_file": recog_prior.prior_xml_file},
+        ),
+        extra_suffix=".fh",
+        optimum=(0.5, 0.2, 0.5) if arch == "blstm" else "async",
     )
-
-    continue
-
-    # doesn't work
-    prior_file = swb_system.nn_priors["train"]["baseline_tdps.no-priors-blstm"][300]
-    print(prior_file)
-    priorInfo={
-        "center-state-prior": {"file": prior_file, "scale": prior},
-        "left-context-prior": {"file": None},
-        "right-context-prior": {"file": None},
-    }
-    prior_info_tune = copy.deepcopy(priorInfo)
-    decoding_args["prior_info"] = prior_info_tune
-    swb_system.decoder.decode(
-        name=name,
-        recog_name=name + ".fh-tuned",
-        epoch=epoch,
-        decoding_args={
-            "context_type": ContextEnum.mono_state_transition,
-            "transition_type": type_map[arch],
-            **decoding_args,
-        },
-        extra_suffix="prior",
-        **new_exp_config.extend(
-            recognition_args=RecognitionConfig(
-                beam_pruning=22.0,
-                beam_pruning_threshold=500000,
-                lm_scale=3.0,
-                tdps=CombinedModel.legacy(),
-                tdp_scale=tdp,
-            ).to_dict(),
-            scorer_args={
-                "forward_scale": fwd_loop,
-                "loop_scale": fwd_loop},
-        ).replace(
-            compile_crnn_config=compile_config,
-            reestimate_prior=False,
-        ).to_dict(),
-    )
-
-
-
+    
+import asyncio
+async def label_tune():
+    await asyncio.gather(tuning, tunings["label"])
+    # await asyncio.gather(tuning)
 
 #-------------------------------------- cleanup ---------------------------------------------------
 

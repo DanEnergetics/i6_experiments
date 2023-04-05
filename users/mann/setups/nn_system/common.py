@@ -6,12 +6,15 @@ __all__ = [
     "init_extended_train_corpus",
 ]
 
-from sisyphus import Path, gs
+from sisyphus import Path, gs, tk
 
 import copy
 from collections import namedtuple
+from typing import Optional
 
 from i6_core import returnn
+from i6_core.tools.compile import MakeJob
+from i6_core.tools.git import CloneGitRepositoryJob
 
 from . import BaseSystem
 
@@ -20,6 +23,8 @@ Binaries = namedtuple('Binaries', ['returnn', 'native_lstm', 'rasr'])
 RETURNN_REPOSITORY_URL = 'https://github.com/rwth-i6/returnn.git'
 RETURNN_PYTHON_HOME = Path('/work/tools/asr/python/3.8.0_tf_1.15-generic+cuda10.1')
 RETURNN_PYTHON_EXE = Path('/work/tools/asr/python/3.8.0_tf_1.15-generic+cuda10.1/bin/python3.8')
+
+RASR_BRANCH_FACTORED_HYBRID = "factored-hybrid-dev"
 
 def init_binaries(
     returnn_python_exe=RETURNN_PYTHON_EXE,
@@ -47,6 +52,32 @@ def init_binaries(
     rasr_binary_path = compile_rasr_binaries_i6mode(
         branch=rasr_branch, commit=rasr_commit)
     return Binaries(returnn_root, native_lstm, rasr_binary_path)
+
+def compile_rasr_binaries(
+    branch: Optional[str] = RASR_BRANCH_FACTORED_HYBRID,
+    commit: Optional[str] = None,
+    rasr_git_repository: str = "https://github.com/rwth-i6/rasr",
+    rasr_arch: str = "linux-x86_64-standard",
+) -> tk.Path:
+    """
+    Compile RASR for i6-internal usage
+
+    :param branch: specify a specific branch
+    :param commit: specify a specific commit
+    :param rasr_git_repository: where to clone RASR from, usually does not need to be altered
+    :param rasr_arch: RASR compile architecture string
+    :return: path to the binary folder
+    """
+    rasr_repo = CloneGitRepositoryJob(rasr_git_repository, branch=branch, commit=commit).out_repository
+    make_job = MakeJob(
+        folder=rasr_repo,
+        make_sequence=["build", "install"],
+        num_processes=8,
+        link_outputs={"binaries": f"arch/{rasr_arch}/"},
+    )
+    make_job.rqmt["mem"] = 8
+    return make_job.out_links["binaries"]
+
 
 def init_env(returnn_python_home=RETURNN_PYTHON_HOME):
     # append compile op python libs to default environment
@@ -213,8 +244,11 @@ def init_extended_train_corpus(
 
 def init_system(
     corpus,
+    custom_args=None,
     output_subdir=None,
     state_tying_args=None,
+    extract_features=False,
+    extend_train_corpus=False,
 ):
     import importlib
 
@@ -225,9 +259,21 @@ def init_system(
     }
 
     corpus_config = importlib.import_module(module_map[corpus], package="i6_experiments.users.mann.setups.nn_system")
-    res_system = corpus_config.get()
+    res_system = corpus_config.get(**(custom_args or {}))
+
+    if extract_features:
+        corpus_config.extract_features(res_system)
 
     res_system.init_report_system(output_subdir or gs.ALIAS_AND_OUTPUT_SUBDIR)
+
+
+    if extend_train_corpus:
+        init_extended_train_corpus(
+            res_system,
+            **corpus_config.extend_train_corpus_args,
+        )
+    else:
+        res_system.init_nn(**corpus_config.init_nn_args)
     
     if state_tying_args:
         res_system.set_state_tying(**state_tying_args)

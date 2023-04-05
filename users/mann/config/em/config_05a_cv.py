@@ -97,7 +97,7 @@ swb_system.crp["crnn_train"].corpus_config["segment-order-sort-by-time-length-ch
 
 assert builder.system is swb_system
 print(type(swb_system.num_classes()))
-print(swb_system.num_classes())
+# print(swb_system.num_classes())
 old_num_classes = swb_system.num_classes()
 
 allo_file = swb_system.get_allophone_file()
@@ -142,44 +142,46 @@ swb_system.add_overlay("train", overlay_name)
 from recipe.i6_core import features
 from recipe.i6_core import corpus
 
-cv_feature_bundle = "/work/asr4/raissi/ms-thesis-setups/lm-sa-swb/dependencies/cv-from-hub5-00/features/gammatones/FeatureExtraction.Gammatone.pp9W8m2Z8mHU/output/gt.cache.bundle"
+# cv_feature_bundle = "/work/asr4/raissi/ms-thesis-setups/lm-sa-swb/dependencies/cv-from-hub5-00/features/gammatones/FeatureExtraction.Gammatone.pp9W8m2Z8mHU/output/gt.cache.bundle"
+# # swb_system.feature_bundles[overlay_name]["gt"] = tk.Path(cv_feature_bundle, cached=True)
+# # swb_system.feature_flows[overlay_name]["gt"] = features.basic_cache_flow([
+# #     swb_system.feature_bundles["train"]["gt"],
+# #     tk.Path(cv_feature_bundle, cached=True),
+# # ])
+# # swb_system.crp[overlay_name].corpus_file = "/work/asr4/raissi/ms-thesis-setups/lm-sa-swb/dependencies/cv-from-hub5-00/merged_corpora/train-dev.corpus.gz"
+# # swb_system.crp[overlay_name].segment_path = ""
+
+# overlay_name = "returnn_train_magic"
+# swb_system.add_overlay("train_magic", overlay_name)
+# swb_system.crp[overlay_name].concurrent = 1
+# swb_system.crp[overlay_name].corpus_config = corpus_config = swb_system.crp[overlay_name].corpus_config._copy()
+# swb_system.crp[overlay_name].segment_path = corpus.SegmentCorpusJob(corpus_config.file, num_segments=1).out_single_segment_files[1]
+
+# overlay_name = "returnn_cv_magic"
+# swb_system.add_overlay("dev", overlay_name)
+# swb_system.crp[overlay_name].concurrent = 1
+# swb_system.crp[overlay_name].segment_path = "/work/asr4/raissi/ms-thesis-setups/lm-sa-swb/dependencies/cv-from-hub5-00/zhou-files-dev/segments"
+# swb_system.crp[overlay_name].corpus_config = corpus_config = swb_system.crp[overlay_name].corpus_config._copy()
+# swb_system.crp[overlay_name].corpus_config.file = "/work/asr4/raissi/ms-thesis-setups/lm-sa-swb/dependencies/cv-from-hub5-00/zhou-files-dev/hub5_00.corpus.cleaned.gz"
+# swb_system.crp[overlay_name].acoustic_model_config = swb_system.crp[overlay_name].acoustic_model_config._copy()
+# del swb_system.crp[overlay_name].acoustic_model_config.tdp
 # swb_system.feature_bundles[overlay_name]["gt"] = tk.Path(cv_feature_bundle, cached=True)
-# swb_system.feature_flows[overlay_name]["gt"] = features.basic_cache_flow([
-#     swb_system.feature_bundles["train"]["gt"],
-#     tk.Path(cv_feature_bundle, cached=True),
-# ])
-# swb_system.crp[overlay_name].corpus_file = "/work/asr4/raissi/ms-thesis-setups/lm-sa-swb/dependencies/cv-from-hub5-00/merged_corpora/train-dev.corpus.gz"
-# swb_system.crp[overlay_name].segment_path = ""
+# swb_system.feature_flows[overlay_name]["gt"] = flow = features.basic_cache_flow(tk.Path(cv_feature_bundle, cached=True))
 
-overlay_name = "returnn_train_magic"
-swb_system.add_overlay("train_magic", overlay_name)
-swb_system.crp[overlay_name].concurrent = 1
-swb_system.crp[overlay_name].corpus_config = corpus_config = swb_system.crp[overlay_name].corpus_config._copy()
-swb_system.crp[overlay_name].segment_path = corpus.SegmentCorpusJob(corpus_config.file, num_segments=1).out_single_segment_files[1]
+# # from recipe.i6_experiments.users.mann.experimental.write import WriteFlowNetworkJob
+# # feature_flow_file = WriteFlowNetworkJob(flow).out_file
+# # dev_extra_config = rasr.RasrConfig()
+# # dev_extra_config.neural_network_trainer.feature_extraction.file = feature_flow_file
 
-overlay_name = "returnn_cv_magic"
-swb_system.add_overlay("dev", overlay_name)
-swb_system.crp[overlay_name].concurrent = 1
-swb_system.crp[overlay_name].segment_path = "/work/asr4/raissi/ms-thesis-setups/lm-sa-swb/dependencies/cv-from-hub5-00/zhou-files-dev/segments"
-swb_system.crp[overlay_name].corpus_config = corpus_config = swb_system.crp[overlay_name].corpus_config._copy()
-swb_system.crp[overlay_name].corpus_config.file = "/work/asr4/raissi/ms-thesis-setups/lm-sa-swb/dependencies/cv-from-hub5-00/zhou-files-dev/hub5_00.corpus.cleaned.gz"
-swb_system.crp[overlay_name].acoustic_model_config = swb_system.crp[overlay_name].acoustic_model_config._copy()
-del swb_system.crp[overlay_name].acoustic_model_config.tdp
-swb_system.feature_bundles[overlay_name]["gt"] = tk.Path(cv_feature_bundle, cached=True)
-swb_system.feature_flows[overlay_name]["gt"] = flow = features.basic_cache_flow(tk.Path(cv_feature_bundle, cached=True))
+# merged_corpus = corpus.MergeCorporaJob(
+#     [swb_system.crp[f"returnn_{k}_magic"].corpus_config.file for k in ["train", "cv"]],
+#     name="switchboard-1",
+#     merge_strategy=corpus.MergeStrategy.FLAT,
+# ).out_merged_corpus
+# swb_system.crp["train_magic"].corpus_config.file = merged_corpus
+# # swb_system.crp["train_magic"].segment_path = corpus.SegmentCorpusJob(merged_corpus, num_segments=1).out_single_segment_files[1]
 
-# from recipe.i6_experiments.users.mann.experimental.write import WriteFlowNetworkJob
-# feature_flow_file = WriteFlowNetworkJob(flow).out_file
-# dev_extra_config = rasr.RasrConfig()
-# dev_extra_config.neural_network_trainer.feature_extraction.file = feature_flow_file
-
-merged_corpus = corpus.MergeCorporaJob(
-    [swb_system.crp[f"returnn_{k}_magic"].corpus_config.file for k in ["train", "cv"]],
-    name="switchboard-1",
-    merge_strategy=corpus.MergeStrategy.FLAT,
-).out_merged_corpus
-swb_system.crp["train_magic"].corpus_config.file = merged_corpus
-# swb_system.crp["train_magic"].segment_path = corpus.SegmentCorpusJob(merged_corpus, num_segments=1).out_single_segment_files[1]
+swb.init_extended_train_corpus(system=swb_system, reinit_shuffle=False)
 
 from i6_experiments.users.mann.setups.nn_system.trainer import RasrTrainer
 
