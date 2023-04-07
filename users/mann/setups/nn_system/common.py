@@ -4,6 +4,7 @@ __all__ = [
     "init_binaries",
     "init_env",
     "init_extended_train_corpus",
+    "init_system",
 ]
 
 from sisyphus import Path, gs, tk

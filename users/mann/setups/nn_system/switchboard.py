@@ -392,12 +392,12 @@ def add_zhou_corpus(system):
     system.feature_bundles[overlay_name]["gt"] = tk.Path(cv_feature_bundle, cached=True)
     system.feature_flows[overlay_name]["gt"] = flow = features.basic_cache_flow(tk.Path(cv_feature_bundle, cached=True))
 
-def get_bw_switchboard_system():
+def get_bw_switchboard_system(legacy_rasr=True):
     from .librispeech import default_tf_native_ops
     binaries = Binaries(
         returnn=None,
         native_lstm=default_tf_native_ops,
-        rasr=None,
+        rasr=None if legacy_rasr else compile_rasr_binaries,
     )
     system = get_legacy_switchboard_system(binaries)
     # setup monophones

@@ -9,6 +9,9 @@ from i6_experiments.users.mann.nn import util as nn_util
 from .nn_system.trainer import RasrTrainer
 from i6_core.returnn.task import ReturnnCustomTaskJob
 from i6_core.rasr.config import WriteRasrConfigJob
+from .tdps import CombinedModel
+
+NO_TDP_MODEL = CombinedModel.zeros()
 
 def accumulate_transition_probabilities(engine, dataset, config=None):
     import numpy
@@ -209,6 +212,9 @@ class EmRunner:
 
     def instantiate_fast_bw_layer(self, returnn_config, fast_bw_args):
         fast_bw_args = fast_bw_args.copy()
+        fast_bw_args[
+            "acoustic_model_extra_config"
+        ] = NO_TDP_MODEL.to_acoustic_model_config()
         fastbw_config, fastbw_post_config \
             = add_fastbw_configs(self.system.crp[fast_bw_args.pop("corpus", "train")], **fast_bw_args) # TODO: corpus dependent and training args
         write_job = WriteRasrConfigJob(fastbw_config["fastbw"], fastbw_post_config["fastbw"])
@@ -255,11 +261,6 @@ class EmRunner:
             config.config["allow_random_model_init"] = True
         else:
             model_name = label_pos_model
-            # preload.set_preload(
-            #     self.system,
-            #     config,
-            #     ("train_magic", model_name, self.num_subepochs),
-            # )
             config.config["load"] = self.system.nn_checkpoints["train_magic"][label_pos_model][self.num_subepochs],
             config.config["load_ignore_missing_vars"] = True
         
@@ -273,65 +274,6 @@ class EmRunner:
             returnn_root=self.returnn_root
         ).run(name="trans_expectation-0", _debug=_debug)
 
-    def compute_expectation(
-        self,
-		label_pos_model: str,
-		trans_model: dict,
-        _debug=False,
-        trans_model_only=False,
-    ):
-        config = copy.deepcopy(self.config)
-        model_name = None
-        # uniform label posterior model
-        if label_pos_model is None:
-            out_layer = config.config["network"]["output"]
-            out_layer["forward_weights_init"] = 0.0
-            out_layer["bias_init"] = 0.0
-        else:
-            model_name = label_pos_model
-        
-        config = self.get_config_with_trans_model(config, trans_model)
-        if not _debug:
-            config.config["batch_size"] = 4000
-        
-        outputs = ["fast_bw_tdps"]
-        if not trans_model_only:
-            outputs.append("fast_bw")
-        
-        alignments = self.system.dump_system.forward(
-            name=label_pos_model,
-            returnn_config=config,
-            epoch=self.num_epochs_per_maximization,
-            hdf_outputs=outputs,
-            training_args=self.exp_config.training_args,
-            fast_bw_args=self.exp_config.fast_bw_args,
-            corpus="train" if not _debug else "returnn_dump",
-            # eval_mode=trans_model_only,
-            mem_rqmt=32,
-            time_rqmt=8,
-            chunk_size=300 if not _debug else 0,
-        )
-        return {
-            "label_pos": alignments["fast_bw"] if not trans_model_only else None,
-            "trans": alignments["fast_bw_tdps"],
-        }
-    
-    def maximize_label(self, name: str, label_weights: tk.Path) -> str:
-        self.system.run_exp(
-            name,
-            crnn_config=self.viterbi_config,
-            exp_config=self.exp_config.extend(
-                training_args={
-                    "hdf_alignment": label_weights,
-                    "dev_corpus": "crnn_dev",
-                    "train_corpus": "returnn_train_magic"
-                }
-            ),
-            alt_training=True,
-            epochs=[self.num_subepochs]
-        )
-        return name
-    
     def make_fix_label_weights_config(
         self,
 		returnn_config,
@@ -370,6 +312,12 @@ class EmRunner:
                 # "ignore_missing": True,
                 "ignore_params_prefixes": ("tdps/",),
             }
+        
+            preload.set_preload(
+                self.system,
+                config=res,
+                base_training=("train_magic", label_pos_model, self.num_subepochs),
+            )
 
         res.config["network"]["output"]["target"] = "layer:label_weights/fast_bw"
         del res.config["network"]["output"]["loss_opts"]
@@ -380,8 +328,15 @@ class EmRunner:
 
         return res
     
-    def maximize_label_pos(self, name: str, trans_model: dict, label_pos_model: tk.Path) -> str:
-        base_config = self.viterbi_config
+    def maximize_label_pos(
+        self,
+        name: str,
+        base_config,
+        trans_model: dict,
+        label_pos_model: tk.Path
+    ) -> str:
+        if base_config is None:
+            base_config = self.viterbi_config
 
         config = self.make_fix_label_weights_config(
             base_config,
@@ -410,17 +365,33 @@ class EmRunner:
             "speech_fwd": maximize_trans_job.out_speech_fwd,
             "silence_fwd": maximize_trans_job.out_silence_fwd,
         }
-
-    def compute_maximum(self, name: str, weights: dict):
-        label_weights = weights["label_pos"]
-        label_pos_model = self.maximize_label(name, label_weights)
-
-        trans_weights = weights["trans"]
-        trans_model = self.maximize_trans(trans_weights)
-
-        return label_pos_model, trans_model
     
-    def run(self, num_iterations=1):
+    def get_base_config_for_iteration(
+        self,
+        config,
+        iteration: int,
+    ):
+        """Mostly adjusts learning rates."""
+        res = copy.deepcopy(config)
+
+        lrs = res.config["learning_rates"]
+        subepoch = iteration * self.num_subepochs
+        end_subepoch = self.num_subepochs + subepoch
+
+        lr_start_idx = min(subepoch, len(lrs))
+        lr_end_idx = min(end_subepoch, len(lrs))
+
+        pad = self.num_subepochs - (lr_end_idx - lr_start_idx)
+
+        res_lrs = lrs[lr_start_idx:lr_end_idx] + [lrs[-1]] * pad
+
+        assert len(res_lrs) == self.num_subepochs
+
+        res.config["learning_rates"] = res_lrs
+
+        return res
+
+    def run(self, name, base_config=None, num_iterations=1):
         label_pos_model = None
         trans_model = {
             "speech_fwd": 1/3,
@@ -432,8 +403,12 @@ class EmRunner:
             trans_counts = self.compute_trans_expectation(label_pos_model, trans_model)
             new_trans_model = self.maximize_trans(trans_counts)
 
+            if base_config:
+                config = self.get_base_config_for_iteration(base_config, it)
+            else:
+                config = None
             new_label_pos_model = self.maximize_label_pos(
-                f"{self.name}-{it}", trans_model, label_pos_model
+                f"{name}-{it}", config, trans_model, label_pos_model
             )
 
             label_pos_model, trans_model = new_label_pos_model, new_trans_model
