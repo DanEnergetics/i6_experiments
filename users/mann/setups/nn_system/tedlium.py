@@ -206,3 +206,8 @@ def get_tedlium_system(
     return system
 
 def get():
+    return get_tedlium_system(
+        segment_order_shuffle=False,
+        full_train_corpus=False,
+        mono_eow=False,
+    )
