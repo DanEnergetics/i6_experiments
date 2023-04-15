@@ -1,3 +1,9 @@
+__all__ = [
+    "BaseTrainer",
+    "RasrTrainer",
+    "RasrTrainerLegacy"
+]
+
 from sisyphus import tk
 from sisyphus.delayed_ops import DelayedFormat
 
@@ -6,19 +12,21 @@ from collections import ChainMap, defaultdict
 
 from i6_core.rasr import WriteRasrConfigJob, RasrConfig, RasrCommand
 from i6_core.returnn import ReturnnTrainingJob, ReturnnRasrDumpHDFJob, ReturnnRasrTrainingJob, ReturnnComputePriorJob
-from i6_core.meta.system import select_element
+from i6_core.meta.system import select_element, System
+
+# legacy imports
 from i6_experiments.users.mann.experimental.write import PickleSegmentsJob, WriteFlowNetworkJob
 from i6_experiments.users.mann.nn.util import DelayedCodeWrapper, maybe_add_dependencies
 from i6_experiments.users.mann.experimental.write import WriteRasrConfigJob as LegacyWriteRasrConfigJob
 
 class BaseTrainer:
 
-    def __init__(self, system=None):
+    def __init__(self, system: System = None):
         if system:
             self.set_system(system)
         self.configs = {}
 
-    def set_system(self, system, **kwargs):
+    def set_system(self, system: System, **kwargs):
         self.system = system
     
     def save_job(self, feature_corpus, name, job):
@@ -52,28 +60,6 @@ class BaseTrainer:
         )
         return score_features
 
-    @staticmethod
-    def write_helper(crp, feature_flow, alignment,
-            num_classes=None,
-            disregarded_classes=None, class_label_file=None,
-            buffer_size=200 * 1024,
-            extra_rasr_config=None,
-            use_python_control=True,
-            **kwargs
-        ):
-            kwargs = locals()
-            del kwargs["kwargs"]
-            return LegacyWriteRasrConfigJob(**kwargs)
-
-    def write(self, corpus, feature_corpus, feature_flow, alignment, num_classes, **kwargs):
-        j = self.write_helper(
-            crp = self.system.csp[corpus],
-            feature_flow = self.system.feature_flows[feature_corpus][feature_flow],
-            alignment = select_element(self.system.alignments, feature_corpus, alignment),
-            num_classes = self.system.functor_value(num_classes),
-            **kwargs)
-        return j
-
     def train_helper(
             self,
             returnn_config,
@@ -95,50 +81,6 @@ class BaseTrainer:
             kwargs = locals()
             del kwargs["_ignored"], kwargs["self"]
             return ReturnnTrainingJob(**kwargs)
-
-class BaseTrainer(BaseTrainer):
-
-    def make_sprint_dataset(
-            self,
-            name,
-            corpus, feature_corpus, feature_flow, alignment, num_classes,
-            estimated_num_seqs=None, partition_epochs=None,
-            **kwargs
-        ):
-            kwargs = locals()
-            kwargs.update(kwargs.pop("kwargs", {}))
-            del kwargs["self"]
-            return self.write(**kwargs).create_dataset_config(crp=self.system.crp[corpus], **kwargs)
-
-    def make_combined_ds(self, arg_mapping):
-        keys = ["alignment", "teacher"]
-        acc_num_seqs = sum(args["estimated_num_seqs"] for args in arg_mapping.values())
-        datasets = {
-            key: self.make_sprint_dataset(**arg_mapping[key]) for key in keys
-        }
-        return {
-            "class": "CombinedDataset",
-            "datasets": datasets,
-            "data_map": {
-                ("alignment", "data"): "data",
-                ("teacher", "data"): "data",
-                ("alignment", "classes"): "classes"
-            },
-            "seq_ordering": "random_dataset",
-            "estimated_num_seqs": acc_num_seqs,
-        }
-    
-    def train(self, name, train_data, dev_data, crnn_config, feature_corpus, **kwargs):
-        train_data = self.make_combined_ds(train_data)
-        dev_data = self.make_sprint_dataset(**dev_data)
-        training_args = ChainMap(locals().copy(), kwargs)
-        del training_args["self"], training_args["kwargs"]
-        j = self.train_helper(**training_args)
-        # feature_corpus = "train"
-        self.system.jobs[feature_corpus]['train_nn_%s' % name] = j
-        self.system.nn_models[feature_corpus][name] = j.out_models
-        self.system.nn_checkpoints[feature_corpus][name] = j.out_checkpoints
-        self.system.nn_configs[feature_corpus][name] = j.out_returnn_config_file
 
 class RasrTrainer(BaseTrainer):
     @staticmethod
@@ -226,7 +168,8 @@ class RasrTrainer(BaseTrainer):
             segments = self.filter_segments(corpus, filter_segments)
             kwargs.update(segments=segments)
         rasr_config_file = self.write_rasr_train_config(
-            self.system.crp[corpus], write_feature_flow.out_flow_file,
+            self.system.crp[corpus],
+            write_feature_flow.out_flow_file,
             alignment=alignment,
             **kwargs)
         tk.register_output(f"nn_configs/{name}/rasr.{dataset_name}.config", rasr_config_file)

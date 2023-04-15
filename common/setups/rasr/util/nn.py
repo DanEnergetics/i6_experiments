@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, Type, TypedDict, Union
 
 from sisyphus import tk
+from sisyphus.delayed_ops import DelayedFormat
 
 import i6_core.am as am
 import i6_core.rasr as rasr
@@ -39,6 +40,15 @@ class ReturnnRasrDataInput:
         shuffle_data: bool = True,
         stm: Optional[tk.Path] = None,
         glm: Optional[tk.Path] = None,
+        # parameters for the ExternSprintDataset
+        num_classes: Optional[int] = None,
+        disregarded_classes: Optional[tk.Path] = None, # not sure if this type is correct, never used it
+        class_label_file: Optional[tk.Path] = None,
+        buffer_size: int = 200 * 1024,
+        partition_epochs: Optional[int] = None,
+        extra_rasr_config: Optional[rasr.RasrConfig] = None,
+        extra_rasr_post_config: Optional[rasr.RasrConfig] = None,
+        use_python_control: bool = True,
         **kwargs,
     ):
         self.name = name
@@ -52,14 +62,51 @@ class ReturnnRasrDataInput:
         self.stm = stm
         self.glm = glm
 
-    @staticmethod
-    def get_data_dict():
-        return {
-            "class": "ExternSprintDataset",
-            "sprintTrainerExecPath": "sprint-executables/nn-trainer",
-            "sprintConfigStr": "",
-            "suppress_load_seqs_print": True,
+        self.num_classes = num_classes
+        self.disregarded_classes = disregarded_classes
+        self.class_label_file = class_label_file
+        self.buffer_size = buffer_size
+        self.partition_epochs = partition_epochs
+        self.extra_rasr_config = extra_rasr_config
+        self.extra_rasr_post_config = extra_rasr_post_config
+        self.use_python_control = use_python_control
+
+    def get_training_feature_flow(self) -> tk.Path:
+        feature_flow = returnn.ReturnnRasrTrainingJob.create_flow(self.feature_flow, self.alignments)
+        write_feature_flow = rasr.WriteFlowNetworkJob(feature_flow)
+        return write_feature_flow.out_flow_file
+    
+    def get_training_rasr_config(self) -> tk.Path:
+        config, post_config = returnn.ReturnnRasrTrainingJob.create_config(
+            self.crp,
+            self.alignments,
+            self.num_classes,
+            self.buffer_size,
+            self.disregarded_classes,
+            self.class_label_file,
+            self.extra_rasr_config,
+            self.extra_rasr_post_config,
+            self.use_python_control,
+        )
+        config.neural_network_trainer.feature_extraction.file = self.get_training_feature_flow()
+        write_rasr_config = rasr.WriteRasrConfigJob(config, post_config)
+        return write_rasr_config.out_config
+    
+    def get_data_dict(self) -> Dict[str, Union[str, DelayedFormat, tk.Path]]:
+        """Returns the data dict for the ExternSprintDataset to be used in a training ReturnnConfig."""
+        config_file = self.get_rasr_training_config()
+        config_str = DelayedFormat(
+            "--config={} --*.LOGFILE=nn-trainer.{}.log --*.TASK=1",
+            config_file, self.name
+        )
+        dataset = { 
+            'class'                 : 'ExternSprintDataset',
+            'sprintTrainerExecPath' : rasr.RasrCommand.select_exe(self.crp.nn_trainer_exe, 'nn-trainer'),
+            'sprintConfigStr'       : config_str,
         }
+        if self.partition_epochs is not None:
+            dataset["partitionEpoch"] = self.partition_epochs
+        return dataset
 
     def build_crp(
         self,

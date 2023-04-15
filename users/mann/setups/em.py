@@ -391,7 +391,7 @@ class EmRunner:
 
         return res
 
-    def run(self, name, base_config=None, num_iterations=1):
+    def run(self, name, base_config=None, num_iterations=1, train_trans=True):
         label_pos_model = None
         trans_model = {
             "speech_fwd": 1/3,
@@ -400,8 +400,11 @@ class EmRunner:
         for it in range(num_iterations):
             # weights = self.compute_expectation(label_pos_model, trans_model)
             # label_pos_model, trans_model = self.compute_maximum(f"{self.name}-{it}", weights)
-            trans_counts = self.compute_trans_expectation(label_pos_model, trans_model)
-            new_trans_model = self.maximize_trans(trans_counts)
+            if train_trans:
+                trans_counts = self.compute_trans_expectation(label_pos_model, trans_model)
+                new_trans_model = self.maximize_trans(trans_counts)
+            else:
+                new_trans_model = trans_model
 
             if base_config:
                 config = self.get_base_config_for_iteration(base_config, it)
