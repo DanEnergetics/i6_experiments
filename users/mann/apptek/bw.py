@@ -74,13 +74,16 @@ class BwConfigBuilder:
             "class": "copy",
             "from": input_layer,
             "loss": "via_layer",
-            "loss_opts": {"loss_wrt_to_act_in": "softmax", "align_layer": "fast_bw"}
+            "loss_opts": {"loss_wrt_to_act_in": "softmax", "align_layer": bw_target_layer}
         }
     
     def remove_ce_loss(self, layer="output"):
-        self.net[layer].pop("loss", None)
-        self.net[layer].pop("loss_opts", None)
-        self.net[layer]["n_out"] = self.num_classes
+        layer_dict = self.net[layer]
+        for key in list(layer_dict.keys()):
+            if key.startswith("loss"):
+                del layer_dict[key]
+        layer_dict.pop("target", None)
+        layer_dict["n_out"] = self.num_classes
     
     def find_output_layers(self) -> List[str]:
         output_layers = []
