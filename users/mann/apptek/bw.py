@@ -15,6 +15,8 @@ from i6_core.rasr import (
 from i6_core.meta import CorpusObject
 from i6_core.am import acoustic_model_config
 
+_DEBUG = False
+
 class BwConfigBuilder:
     """
     Helper class for building a ReturnnConfig for fast_bw training given an existing ReturnnConfig.
@@ -77,6 +79,9 @@ class BwConfigBuilder:
             "loss_opts": {"loss_wrt_to_act_in": "softmax", "align_layer": bw_target_layer}
         }
     
+    def remove_layer(self, name):
+        pass
+    
     def remove_ce_loss(self, layer="output"):
         layer_dict = self.net[layer]
         for key in list(layer_dict.keys()):
@@ -132,6 +137,8 @@ def make_crp(
         )
     )
     crp.acoustic_model_config.state_tying.file = state_tying.get("path", None)
+    if "extra_config" in state_tying:
+        crp.acoustic_model_config.state_tying._update(state_tying["extra_config"])
     return crp
 
 
@@ -153,6 +160,9 @@ def make_fastbw_rasr_config(
     crp.acoustic_model_config.fix_allophone_context_at_word_boundaries = True
     crp.acoustic_model_config.transducer_builder_filter_out_invalid_allophones = True
     crp.acoustic_model_config.applicator_type = "corrected"
+
+    if _DEBUG:
+        crp.acoustic_model_config.fix_tdp_leaving_epsilon_arc = True
 
     mapping = {
         'corpus': 'neural-network-trainer.corpus',
