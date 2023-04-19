@@ -1300,13 +1300,13 @@ class ConfigBuilder:
 			assert self.loss == "bw"
 			self.system.prior_system.add_to_config(config)
 
-		for transform in self.transforms:
-			transform(config)
-		
-		config.config.update(self.updates)
+		config.config.update(copy.deepcopy(self.updates))
 
 		for key in self.deletions:
 			del config.config[key]
+
+		for transform in self.transforms:
+			transform(config)
 		
 		return config
 	
