@@ -178,6 +178,7 @@ class EmRunner:
         returnn_python_exe,
 		num_epochs_per_maximization=1,
         partition_epochs=1,
+        dump_alignment: bool = False,
     ):
         self.name = name
         self.system = system
@@ -207,6 +208,7 @@ class EmRunner:
             "silence_idx": system.silence_idx(),
         }
 
+        self.dump_alignment = dump_alignment
         # from i6_experiments.users.mann.setups.nn_system.trainer import HdfAlignTrainer
         # system.set_trainer(HdfAlignTrainer())
 
@@ -333,7 +335,7 @@ class EmRunner:
         name: str,
         base_config,
         trans_model: dict,
-        label_pos_model: tk.Path
+        label_pos_model: tk.Path,
     ) -> str:
         if base_config is None:
             base_config = self.viterbi_config
@@ -354,6 +356,16 @@ class EmRunner:
             epochs=[self.num_subepochs],
         )
 
+        if self.dump_alignment:
+            self.system.dump_system.run(
+                name=name,
+                returnn_config=config,
+                epoch=self.num_subepochs,
+                training_args=self.exp_config.training_args,
+                fast_bw_args=self.exp_config.fast_bw_args,
+                hdf_outputs=["label_weights/fast_bw"],
+            )
+
         return name
 
     def maximize_trans(self, trans_counts: tk.Path) -> dict:
@@ -361,10 +373,11 @@ class EmRunner:
             trans_counts,
             silence_idx=self.system.silence_idx(),
         )
-        return {
+        res = {
             "speech_fwd": maximize_trans_job.out_speech_fwd,
             "silence_fwd": maximize_trans_job.out_silence_fwd,
         }
+        return res
     
     def get_base_config_for_iteration(
         self,
@@ -403,6 +416,8 @@ class EmRunner:
             if train_trans:
                 trans_counts = self.compute_trans_expectation(label_pos_model, trans_model)
                 new_trans_model = self.maximize_trans(trans_counts)
+                for key, val in new_trans_model.items():
+                    tk.register_output(f"weights/{name}/{key}-{it}", val)
             else:
                 new_trans_model = trans_model
 

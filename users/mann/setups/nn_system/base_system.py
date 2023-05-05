@@ -106,6 +106,7 @@ class RecognitionConfig(AbstractConfig):
 	beam_pruning_threshold : Union[int, float] = NotSpecified
 	pronunciation_scale : float = NotSpecified
 	altas : Optional[float] = NotSpecified
+	use_gpu: Optional[bool] = False
 	extra_args : Optional[dict] = dataclasses.field(default_factory=dict)
 	extra_config : Optional[rasr.RasrConfig] = NotSpecified
 
@@ -146,6 +147,7 @@ class RecognitionConfig(AbstractConfig):
 			out_dict["search_parameters"]["beam-pruning-limit"] = self.beam_pruning_threshold
 		if self.pronunciation_scale is not NotSpecified:
 			out_dict["pronunciation_scale"] = self.pronunciation_scale
+		out_dict["use_gpu"] = self.use_gpu
 		return out_dict
 		
 
@@ -808,7 +810,8 @@ class BaseSystem(RasrSystem):
 
 			# alternative decoding procedure
 			if not alt_decoding:
-				return
+				assert train_job
+				return train_job
 			if isinstance(alt_decoding, bool) and alt_decoding:
 				alt_decoding = {}
 			alt_decoding_epochs = alt_decoding.pop("epochs", epochs)
@@ -818,6 +821,8 @@ class BaseSystem(RasrSystem):
 				kwargs["training_args"] = kwargs.pop("train_args")
 				kwargs["decoding_args"] = kwargs.pop("alt_decoding")
 				self.decoder.decode(**kwargs)
+			
+			return train_job
 	
 	def extract_prior(self, name, crnn_config, training_args, epoch, bw=False):
 		# alignment = None
@@ -1353,6 +1358,9 @@ class NNSystem(BaseSystem):
 		import i6_experiments.users.mann.setups.prior as tp
 		self.prior_system: tp.PriorSystem = None
 
+		from .. import dump
+		self.dump_system: dump.HdfDumpster = None
+
 		from i6_core.tools import CloneGitRepositoryJob
 		self.cleaner_returnn_root = CloneGitRepositoryJob(
 			"https://github.com/DanEnergetics/returnn.git",
@@ -1423,10 +1431,14 @@ class NNSystem(BaseSystem):
 		self,
 		name: str,
 		exp_config: ExpConfig,
+		returnn_config: Optional[crnn.ReturnnConfig] = None,
 		**kwargs
 	):
 		kwargs = ChainMap(kwargs, exp_config.__dict__)
-		self.nn_and_recog(
+		assert not (returnn_config and kwargs.get("crnn_config", None))
+		if returnn_config:
+			kwargs["crnn_config"] = returnn_config
+		return self.nn_and_recog(
 			name, **kwargs
 		)
 	
@@ -1460,6 +1472,8 @@ class NNSystem(BaseSystem):
 		fast_bw_args={},
 		alt_training=False,
 		dump_epochs=None, dump_args=None,
+		dump_config=None,
+		qsub_args=None,
 		**kwargs
 	):
 		# experimental
@@ -1525,7 +1539,8 @@ class NNSystem(BaseSystem):
 			self.crp["train"].acoustic_model_config = self.crp["base"].acoustic_model_config._copy()
 			del self.crp["train"].acoustic_model_config.tdp
 
-			dump_config = copy.deepcopy(crnn_config)
+			if not dump_config:
+				dump_config = copy.deepcopy(crnn_config)
 			# call training
 			j = super().nn_and_recog(
 				name, training_args, crnn_config, scorer_args, recognition_args, epochs=epochs, 
@@ -1545,8 +1560,10 @@ class NNSystem(BaseSystem):
 					epoch=epoch,
 					training_args=training_args,
 					fast_bw_args=fast_bw_args,
-					plot_args=dump_args,
+					**(dump_args or {}),
 				)
+			
+			return j
 
 	
 	def nn_align(self, nn_name, epoch, crnn_config=None, compile_crnn_config=None, plugin_args=MappingProxyType({}), **kwargs):

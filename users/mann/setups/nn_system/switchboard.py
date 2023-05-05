@@ -87,9 +87,12 @@ external_alignments = {
 }
 
 external_alignment_logs = {
-    k: Path(
-        v.get_path()[:-len('cache.bundle')] + f'alignment.log.{id}.gz'
-    ) for k, v in external_alignments.items() for id in range(1, 201)
+    k: {
+        id: Path(
+            v.get_path()[:-len('cache.bundle')] + f'log.{id}.gz'
+        )
+        for id in range(1, 201)
+     } for k, v in external_alignments.items()
     if k != 'tuske'
 }
 

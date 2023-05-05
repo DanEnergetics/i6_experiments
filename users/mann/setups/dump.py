@@ -124,6 +124,8 @@ class HdfDumpster:
         new_returnn_config = copy.deepcopy(returnn_config)
         new_returnn_config.config["eval"] = dataset
         network = new_returnn_config.config["network"]
+        new_outputs = []
+        output_map = {}
         for output in hdf_outputs:
             if "/" in output:
                 parent_layer, sub_layer = output.split("/")
@@ -135,11 +137,14 @@ class HdfDumpster:
             else:
                 assert output in network, "Layer {} is not in the network".format(output)
                 output_name = output
+            output_file_name = "{}.hdf".format(output_name)
+            output_map[output] = output_file_name
             network["dump_{}".format(output_name)] = {
-                "class": "hdf_dump", "filename": "{}.hdf".format(output_name),
+                "class": "hdf_dump", "filename": output_file_name,
                 "is_output_layer": True, "from": output
             }
-        return new_returnn_config
+            # new_outputs.append(output_file_name)
+        return new_returnn_config, output_map
 
     def forward(
         self,
@@ -150,6 +155,7 @@ class HdfDumpster:
 		training_args={},
 		fast_bw_args={},
 		corpus="returnn_dump",
+        init_fast_bw_layer=True,
         eval_mode=False,
         time_rqmt=4,
         mem_rqmt=4,
@@ -164,24 +170,27 @@ class HdfDumpster:
         })
         # dataset = BaseTrainer(self.system).make_sprint_dataset("forward", **args)
         dataset = RasrTrainer(self.system).make_rasr_dataset(name, "forward", **args)
-        returnn_config = self.instantiate_fast_bw_layer(returnn_config, fast_bw_args)
+        if init_fast_bw_layer:
+            returnn_config = self.instantiate_fast_bw_layer(returnn_config, fast_bw_args)
         returnn_root = training_args.get("returnn_root", self.system.returnn_root) or tk.Path(gs.RETURNN_ROOT)
         returnn_python_exe = training_args.get("returnn_python_exe", self.system.returnn_python_exe) or tk.Path(gs.RETURNN_PYTHON_EXE)
         model_checkpoint = None
         if name is not None:
             model_checkpoint = meta.select_element(self.system.nn_checkpoints, args["feature_corpus"], (args["feature_corpus"], name, epoch))
         
+        returnn_config, output_file_names = self._prepare_config(returnn_config, dataset, hdf_outputs)
         forward_job = ReturnnForwardJob(
             model_checkpoint=model_checkpoint,
-            returnn_config=self._prepare_config(returnn_config, dataset, hdf_outputs),
+            returnn_config=returnn_config,
             returnn_python_exe=returnn_python_exe,
             returnn_root=returnn_root,
-            hdf_outputs=["{}.hdf".format(output) for output in hdf_outputs],
+            hdf_outputs=list(output_file_names.values()),
             eval_mode=eval_mode,
             time_rqmt=time_rqmt,
             mem_rqmt=mem_rqmt,
         )
-        out = {name.rstrip(".hdf"): file for name, file in forward_job.out_hdf_files.items()}
+        out = {name: forward_job.out_hdf_files[hdf_file] for name, hdf_file in output_file_names.items()}
+        out["output"] = forward_job.out_hdf_files["output.hdf"]
         return out
     
     def score(self, name, returnn_config, epoch, extra_name=None, training_args={}, fast_bw_args={}, **kwargs):
@@ -240,11 +249,12 @@ class HdfDumpster:
         for seg, path in plot_job.out_plots.items():
             tk.register_output("bw_plots/{}/{}.png".format(name, seg.replace("/", "_")), path)
     
-    def run(self, name, returnn_config, epoch, training_args, fast_bw_args={}, plot_args={}, **kwargs):
-        dumps = self.forward(name, returnn_config, epoch, training_args=training_args, fast_bw_args=fast_bw_args, **kwargs)
+    def run(self, name, returnn_config, epoch, training_args, hdf_outputs=["fast_bw"], fast_bw_args={}, plot_args={}, **kwargs):
+        assert len(hdf_outputs) == 1, "Only one output supported for now"
+        dumps = self.forward(name, returnn_config, epoch, training_args=training_args, fast_bw_args=fast_bw_args, hdf_outputs=hdf_outputs, **kwargs)
         self.plot(
             name="-".join([name, str(epoch)]),
-            bw_dumps=dumps["fast_bw"],
+            bw_dumps=dumps[hdf_outputs[0]],
             corpus="train",
             segments=self.segments,
             **self.global_plot_args.new_child(plot_args)

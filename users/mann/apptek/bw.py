@@ -1,9 +1,9 @@
 from sisyphus import tk, delayed_ops
 
 import numpy as np
-from typing import List
+from typing import List, Optional
 
-from i6_core.returnn import ReturnnConfig
+from i6_core.returnn import ReturnnConfig, CodeWrapper
 from i6_core.rasr import (
     CommonRasrParameters,
     crp_add_default_output,
@@ -101,6 +101,28 @@ class BwConfigBuilder:
         
         return output_layers
 
+    def find_layer_with_input(self, input_layer):
+        for layer_name, layer in self.net.items():
+            if layer["from"] == input_layer:
+                return layer_name
+        raise KeyError(f"Could not find layer with input {input_layer}")
+
+    def skip_layer(self, layer_name):
+        input_layer = self.net[layer_name]["from"]
+        assert isinstance(input_layer, str)
+        next_layer = self.find_layer_with_input(layer_name)
+        self.net[next_layer]["from"] = input_layer
+        del self.net[layer_name]
+
+    def safe_remove_mask_layers(self):
+        found = False
+        for layer_name in list(self.net.keys()):
+            if layer_name.startswith("masked_tconv"):
+                self.skip_layer(layer_name)
+                found = True
+        if not found:
+            raise ValueError("Could not find masked_tconv layer")
+
 
 def make_crp(
     bliss_corpus: tk.Path,
@@ -136,7 +158,7 @@ def make_crp(
             "infinity", 0.0
         )
     )
-    crp.acoustic_model_config.state_tying.file = state_tying.get("path", None)
+    crp.acoustic_model_config.state_tying.file = state_tying.get("file", None)
     if "extra_config" in state_tying:
         crp.acoustic_model_config.state_tying._update(state_tying["extra_config"])
     return crp
@@ -195,6 +217,7 @@ def add_bw_loss(
 	speech_fwd_probability: float = 1/3,
 	silence_fwd_probability: float = 1/40,
 	reuse_bw_alignment: bool = True,
+    remove_mask_layers: bool = True, 
 ):
     """
     Adds a bw loss to an existing RETURNN config given a corpus and lexicon file.
@@ -219,6 +242,7 @@ def add_bw_loss(
     :param float silence_fwd_probability: silence forward probability
     :param bool reuse_bw_alignment: whether only compute one bw alignment and
     apply it to all output layers
+    :param bool remove_mask_layers: necessary for conformers
 
     :return: RETURNN config with bw loss added
     """
@@ -241,6 +265,9 @@ def add_bw_loss(
 
     output_layers = config_builder.find_output_layers()
     assert "output" in output_layers, "No output layer found in RETURNN config."
+
+    if remove_mask_layers:
+        config_builder.safe_remove_mask_layers()
 
     if reuse_bw_alignment or len(output_layers) == 1:
         config_builder.add_fastbw_layer()
@@ -265,3 +292,53 @@ def add_bw_loss(
             bw_target_layer=fastbw_layer_name,
         )
     return config_builder.returnn_config
+
+
+def make_uniform_label_posterior_net(network):
+    network["uniform_label_posterior"] = {
+        "class": "eval",
+        "from": "output",
+        "eval": "tf.zeros_like(source(0), dtype=tf.float32)",
+    }
+    for layer in network.values():
+        if layer["class"] != "fast_bw": continue
+        layer["from"] = "uniform_label_posterior"
+        del layer["input_type"] # defaults to "log_prob"
+    return network
+
+
+def uniform_label_pretrain_construction_algo(idx, net_dict):
+    if idx != 0: return None
+    return make_uniform_label_posterior_net(net_dict)
+
+
+def add_uniform_pretrain(
+    returnn_config: ReturnnConfig,
+    num_pretrain_epochs: int,
+    learning_rate_copy: bool = False,
+    pretrain_learning_rate: Optional[float] = None,
+):
+    new_config = ReturnnConfig(
+        config={
+            "pretrain": {
+                "repetitions": {
+                    "default": num_pretrain_epochs,
+                    "final": 0,
+                },
+                "construction_algo": CodeWrapper(uniform_label_pretrain_construction_algo.__name__)
+            }
+        },
+        python_prolog=(make_uniform_label_posterior_net, uniform_label_pretrain_construction_algo)
+
+    )
+    if pretrain_learning_rate:
+        new_config.config["pretrain_learning_rate"] = pretrain_learning_rate
+    
+    if learning_rate_copy:
+        new_config.config["use_learning_rate_control_always"] = True
+        lrs = returnn_config.config["learning_rates"]
+        new_config.config["learning_rates"] = lrs[:num_pretrain_epochs] + lrs
+
+    returnn_config.update(new_config)
+
+    return returnn_config
