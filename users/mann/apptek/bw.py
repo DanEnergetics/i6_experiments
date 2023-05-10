@@ -103,7 +103,7 @@ class BwConfigBuilder:
 
     def find_layer_with_input(self, input_layer):
         for layer_name, layer in self.net.items():
-            if layer["from"] == input_layer:
+            if layer.get("from") == input_layer:
                 return layer_name
         raise KeyError(f"Could not find layer with input {input_layer}")
 
@@ -264,7 +264,7 @@ def add_bw_loss(
     )
 
     output_layers = config_builder.find_output_layers()
-    assert "output" in output_layers, "No output layer found in RETURNN config."
+    assert "output" in returnn_config.config["network"], "No output layer found in RETURNN config."
 
     if remove_mask_layers:
         config_builder.safe_remove_mask_layers()
@@ -323,7 +323,7 @@ def add_uniform_pretrain(
             "pretrain": {
                 "repetitions": {
                     "default": num_pretrain_epochs,
-                    "final": 0,
+                    "final": 1,
                 },
                 "construction_algo": CodeWrapper(uniform_label_pretrain_construction_algo.__name__)
             }
