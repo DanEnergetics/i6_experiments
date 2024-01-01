@@ -37,9 +37,10 @@ class OnnxPrecomputedHybridSystem(HybridSystem):
         nn_prior: bool,
         epochs: Optional[List[Union[int, str]]] = None,
         train_job: Optional[Union[returnn.ReturnnTrainingJob, returnn.ReturnnRasrTrainingJob]] = None,
-        needs_features_size: bool = True,
+        feature_size_id: Optional[str] = "data_len",
         acoustic_mixture_path: Optional[tk.Path] = None,
         best_checkpoint_key: str = "dev_loss_CE",
+        prior_file: Optional[tk.Path] = None,
         **kwargs,
     ):
         """
@@ -80,14 +81,18 @@ class OnnxPrecomputedHybridSystem(HybridSystem):
                 onnx_model = onnx_job.out_onnx_model
 
                 io_map = {"features": "data", "output": "classes"}
-                if needs_features_size:
-                    io_map["features-size"] = "data_len"
+                if feature_size_id is not None:
+                    io_map["features-size"] = feature_size_id
                 onnx_flow = make_precomputed_hybrid_onnx_feature_flow(
                     onnx_model=onnx_model,
                     io_map=io_map,
                     cpu=kwargs.get("cpu", 1),
                 )
-                flow = add_fwd_flow_to_base_flow(feature_flow, onnx_flow, fwd_input_name="onnx-fwd-input")
+                # print(onnx_flow)
+                flow = add_fwd_flow_to_base_flow(feature_flow, onnx_flow)
+
+                # print(flow)
+                # quit()
 
                 if nn_prior:
                     raise NotImplementedError
@@ -96,6 +101,7 @@ class OnnxPrecomputedHybridSystem(HybridSystem):
                     scorer = rasr.PrecomputedHybridFeatureScorer(
                         prior_mixtures=acoustic_mixture_path,
                         priori_scale=prior,
+                        prior_file=prior_file,
                     )
 
                 self.feature_scorers[recognition_corpus_key][f"pre-nn-{name}-{prior:02.2f}"] = scorer

@@ -10,11 +10,11 @@ from i6_core import rasr
 from i6_core import returnn
 
 from i6_experiments.users.jxu.models.conformer import conformer_network
-from i6_experiments.users.jxu.experiments.hybrid.switchboard.baseline_args_jingjing import get_returnn_configs_jingjing, get_nn_args, RECUSRION_LIMIT
+# from i6_experiments.users.jxu.experiments.hybrid.switchboard.baseline_args_jingjing import get_returnn_configs_jingjing, get_nn_args, RECUSRION_LIMIT
 from i6_experiments.users.jxu.experiments.hybrid.switchboard.reduced_dim import network as reduced
 from i6_experiments.users.jxu.experiments.hybrid.switchboard.data import get_corpus_data_inputs_newcv
 from i6_experiments.users.jxu.experiments.hybrid.switchboard.default_tools import RASR_BINARY_PATH, RETURNN_ROOT
-from i6_experiments.users.jxu.experiments.hybrid.switchboard.conformer_baseline import run_gmm_system_from_common, run_hybrid_baseline_jingjing
+from i6_experiments.users.jxu.experiments.hybrid.switchboard.conformer_baseline import run_gmm_system_from_common
 
 from . import default_tools as tools
 
@@ -236,44 +236,3 @@ def get_returnn_config_swb(
         peak_lr=peak_lr,
         const_lr=const_lr,
     )
-
-def compare_to_reduced(network, base=reduced):
-    if set(network.keys()) != set(base.keys()):
-        net_keys = set(network.keys())
-        base_keys = set(base.keys())
-        print("Keys not matching")
-        print("Only network keys:")
-        print(net_keys - base_keys)
-        print("Only base keys:")
-        print(base_keys - net_keys)
-        quit()
-    for key in network:
-        if network[key] == base[key]:
-            continue
-        print(key)
-        print(network[key])
-        print(base[key])
-        quit()
-
-def compare_to_base(config, recog=False):
-    base_nn_args = get_nn_args(num_epochs=260, peak_lr=2e-3)
-
-    base_config = base_nn_args.returnn_training_configs["conformer_jingjing"] if not recog else base_nn_args.returnn_recognition_configs["conformer_jingjing"]
-
-    if set(base_config.config.keys()) != set(config.config.keys()):
-        print("Config keys:")
-        print(config.config.keys())
-        print("Base keys:")
-        print(base_config.config.keys())
-        quit()
-    
-    for key in config.config:
-        if config.config[key] == base_config.config[key]:
-            continue
-        if key == "network":
-            compare_to_reduced(config.config[key], base_config.config[key])
-        print(key)
-        print(config.config[key])
-        print(base_config.config[key])
-        quit()
-

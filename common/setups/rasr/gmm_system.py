@@ -1059,7 +1059,9 @@ class GmmSystem(RasrSystem):
                 f"alignment_{steps.get_step_names_as_list()[step_idx - 1]}"
             ][-1]
 
-        if corpus_type == "train":
+        if corpus_type == "train" and self.alignments[corpus_key].get(
+            f"train_{steps.get_prev_gmm_step(step_idx)}", False
+        ):
             gmm_output.alignments = self.alignments[corpus_key][f"train_{steps.get_prev_gmm_step(step_idx)}"][-1]
             gmm_output.acoustic_mixtures = self.mixtures[corpus_key][f"train_{steps.get_prev_gmm_step(step_idx)}"][-1]
 
