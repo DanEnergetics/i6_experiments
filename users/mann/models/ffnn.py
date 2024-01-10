@@ -25,7 +25,8 @@ class ModelConfig:
     window_size: int = 15
     dropout: float = 0.1
     spec_aug_cfg: SpecAugmentV1ByLengthConfig = None
-    activation: Callable[[torch.Tensor], torch.Tensor] = nn.functional.relu
+    hidden_activation: Callable[[torch.Tensor], torch.Tensor] = nn.functional.relu
+    out_activation: Callable[[torch.Tensor], torch.Tensor] = nn.functional.log_softmax
 
 class FeedForward(nn.Module):
     """
@@ -67,8 +68,8 @@ class Model(nn.Module):
 
         self.layers = nn.ModuleList()
         hidden_dims = [cfg.hidden_dim] * cfg.num_layers
-        log_sfmx_func = partial(nn.functional.log_softmax, dim=-1)
-        activations = [cfg.activation] * cfg.num_layers + [log_sfmx_func]
+        log_sfmx_func = partial(cfg.out_activation, dim=-1)
+        activations = [cfg.hidden_activation] * cfg.num_layers + [log_sfmx_func]
         for in_dim, out_dim, act_func, wds in zip(
             [cfg.feature_dim] + hidden_dims,
             hidden_dims + [cfg.output_dim],
